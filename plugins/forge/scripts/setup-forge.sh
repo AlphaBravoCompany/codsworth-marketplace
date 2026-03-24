@@ -9,7 +9,7 @@ set -euo pipefail
 # Parse arguments
 FEATURE_NAME=""
 CONTEXT_FILE=""
-OUTPUT_DIR="docs/specs"
+OUTPUT_DIR="forge-specs"
 MAX_QUESTIONS=0  # Unlimited by default
 NO_SURVEY=false
 FIRST_PRINCIPLES=false
@@ -33,7 +33,7 @@ ARGUMENTS:
 OPTIONS:
   --prompt <text>       Tell forge what you want (e.g., "refine this spec deeper", "add error handling")
   --context <file>      Initial context file (PRD, requirements, spec to refine, etc.)
-  --output-dir <dir>    Output directory for specs (default: docs/specs)
+  --output-dir <dir>    Output directory for specs (default: forge-specs)
   --max-questions <n>   Maximum question rounds (default: unlimited)
   --no-survey           Skip codebase survey (for greenfield/empty projects)
   --first-principles    Challenge assumptions before detailed spec gathering
@@ -65,13 +65,13 @@ EXAMPLES:
 OUTPUT:
   Final spec:     {output-dir}/{feature-slug}.md
   Structured JSON: {output-dir}/{feature-slug}.json
-  Survey data:    docs/recon/{feature-slug}/
+  Survey data:    {output-dir}/{feature-slug}/survey/
   Progress:       {output-dir}/{feature-slug}-progress.txt
   Draft:          .claude/forge-draft.md
 
 WORKFLOW:
   1. Forge researches + interviews: /forge:plan "my feature"
-  2. Foundry builds + verifies:     /foundry --spec docs/specs/my-feature.md
+  2. Foundry builds + verifies:     /foundry --spec forge-specs/my-feature.md
 
   Forge plans. Foundry builds. Ship with confidence.
 HELP_EOF
@@ -128,15 +128,15 @@ fi
 mkdir -p "$OUTPUT_DIR"
 mkdir -p .claude
 
-# Generate slug for filename (max 60 characters)
-FEATURE_SLUG=$(echo "$FEATURE_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | cut -c1-60)
+# Generate slug from feature name (strip path components, max 60 chars)
+FEATURE_SLUG=$(basename "$FEATURE_NAME" .md | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | cut -c1-60)
 SPEC_PATH="$OUTPUT_DIR/$FEATURE_SLUG.md"
 JSON_PATH="$OUTPUT_DIR/$FEATURE_SLUG.json"
 PROGRESS_PATH="$OUTPUT_DIR/$FEATURE_SLUG-progress.txt"
 DRAFT_PATH=".claude/forge-draft.md"
 STATE_PATH=".claude/forge-${FEATURE_SLUG}.md"
-SURVEY_DIR="docs/recon/$FEATURE_SLUG/survey"
-REALITY_PATH="docs/recon/$FEATURE_SLUG/reality.md"
+SURVEY_DIR="$OUTPUT_DIR/$FEATURE_SLUG/survey"
+REALITY_PATH="$OUTPUT_DIR/$FEATURE_SLUG/reality.md"
 TIMESTAMP=$(date +%Y-%m-%d)
 
 # Create survey directory
