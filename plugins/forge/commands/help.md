@@ -106,7 +106,7 @@ The key difference: every question references specific findings from the survey.
 ## Output
 
 **During interview:**
-- Draft spec: `forge-specs/{slug}/draft.md`
+- Draft spec: `forge-specs/{slug}/ (spec.md, spec.json, draft.md, survey/)`
 - Survey data: `docs/recon/{slug}/survey/`
 - Reality doc: `docs/recon/{slug}/reality.md`
 

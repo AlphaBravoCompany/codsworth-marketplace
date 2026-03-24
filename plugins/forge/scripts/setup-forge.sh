@@ -63,15 +63,15 @@ EXAMPLES:
   /forge:plan "greenfield api" --no-survey
 
 OUTPUT:
-  Final spec:     {output-dir}/{feature-slug}.md
-  Structured JSON: {output-dir}/{feature-slug}.json
+  Final spec:     {output-dir}/{feature-slug}/spec.md
+  Structured JSON: {output-dir}/{feature-slug}/spec.json
   Survey data:    {output-dir}/{feature-slug}/survey/
-  Progress:       {output-dir}/{feature-slug}-progress.txt
+  Progress:       {output-dir}/{feature-slug}/progress.txt
   Draft:          .claude/forge-draft.md
 
 WORKFLOW:
   1. Forge researches + interviews: /forge:plan "my feature"
-  2. Foundry builds + verifies:     /foundry --spec forge-specs/my-feature.md
+  2. Foundry builds + verifies:     /foundry --spec forge-specs/my-feature/spec.md
 
   Forge plans. Foundry builds. Ship with confidence.
 HELP_EOF
@@ -129,9 +129,9 @@ mkdir -p "$OUTPUT_DIR"
 
 # Generate slug from feature name (strip path components, max 60 chars)
 FEATURE_SLUG=$(basename "$FEATURE_NAME" .md | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | cut -c1-60)
-SPEC_PATH="$OUTPUT_DIR/$FEATURE_SLUG.md"
-JSON_PATH="$OUTPUT_DIR/$FEATURE_SLUG.json"
-PROGRESS_PATH="$OUTPUT_DIR/$FEATURE_SLUG-progress.txt"
+SPEC_PATH="$OUTPUT_DIR/$FEATURE_SLUG/spec.md"
+JSON_PATH="$OUTPUT_DIR/$FEATURE_SLUG/spec.json"
+PROGRESS_PATH="$OUTPUT_DIR/$FEATURE_SLUG/progress.txt"
 DRAFT_PATH="$OUTPUT_DIR/$FEATURE_SLUG/draft.md"
 STATE_PATH="$OUTPUT_DIR/$FEATURE_SLUG/state.md"
 SURVEY_DIR="$OUTPUT_DIR/$FEATURE_SLUG/survey"
