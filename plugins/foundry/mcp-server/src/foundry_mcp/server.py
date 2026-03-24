@@ -38,7 +38,6 @@ from foundry_mcp.tools.forge_spec import (
     forge_spec_start,
     forge_spec_status,
 )
-from foundry_mcp.tools.output import init_run, query_run, register_artifact
 from foundry_mcp.tools.validation import validate_report
 
 # Global project root, set via CLI arg
@@ -74,48 +73,6 @@ async def list_tools() -> list[Tool]:
                     "spec_path": {"type": "string", "description": "Path to the LISA spec."},
                     "report_path": {"type": "string", "description": "Path to the critic report."},
                     "strict": {"type": "boolean", "default": False, "description": "Fail if any requirement uncovered."},
-                },
-            },
-        ),
-        Tool(
-            name="Init-Run",
-            description="Create a structured run directory with persistent files, iteration dirs, and symlinks.",
-            inputSchema={
-                "type": "object",
-                "required": ["run_type"],
-                "properties": {
-                    "run_type": {"type": "string", "enum": ["marathon", "mill", "mill-ui", "foundry"]},
-                    "ticket": {"type": "string", "default": ""},
-                    "description": {"type": "string", "default": ""},
-                    "spec_path": {"type": "string"},
-                    "output_dir": {"type": "string"},
-                },
-            },
-        ),
-        Tool(
-            name="Register-Artifact",
-            description="Move an artifact into the run's iteration directory and update manifest.",
-            inputSchema={
-                "type": "object",
-                "required": ["run_id", "artifact_type", "iteration", "file_path"],
-                "properties": {
-                    "run_id": {"type": "string"},
-                    "artifact_type": {"type": "string"},
-                    "iteration": {"type": "integer"},
-                    "file_path": {"type": "string"},
-                },
-            },
-        ),
-        Tool(
-            name="Query-Run",
-            description="Query artifacts across runs and iterations.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "run_id": {"type": "string"},
-                    "iteration": {"type": "integer"},
-                    "artifact_type": {"type": "string"},
-                    "include_content": {"type": "boolean", "default": False},
                 },
             },
         ),
@@ -381,14 +338,7 @@ _DISPATCH = {
     "Verify-Citations": lambda args: verify_citations(
         spec_path=args["spec_path"], report_path=args["report_path"],
         strict=args.get("strict", False), project_root=_project_root),
-    "Init-Run": lambda args: init_run(
-        run_type=args["run_type"], ticket=args.get("ticket", ""), description=args.get("description", ""),
         spec_path=args.get("spec_path"), output_dir=args.get("output_dir"), project_root=_project_root),
-    "Register-Artifact": lambda args: register_artifact(
-        run_id=args["run_id"], artifact_type=args["artifact_type"],
-        iteration=args["iteration"], file_path=args["file_path"], project_root=_project_root),
-    "Query-Run": lambda args: query_run(
-        run_id=args.get("run_id"), iteration=args.get("iteration"),
         artifact_type=args.get("artifact_type"), include_content=args.get("include_content", False),
         project_root=_project_root),
     "Foundry-Init": lambda args: foundry_init(

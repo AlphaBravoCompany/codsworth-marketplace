@@ -126,15 +126,14 @@ fi
 
 # Create output directories
 mkdir -p "$OUTPUT_DIR"
-mkdir -p .claude
 
 # Generate slug from feature name (strip path components, max 60 chars)
 FEATURE_SLUG=$(basename "$FEATURE_NAME" .md | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | cut -c1-60)
 SPEC_PATH="$OUTPUT_DIR/$FEATURE_SLUG.md"
 JSON_PATH="$OUTPUT_DIR/$FEATURE_SLUG.json"
 PROGRESS_PATH="$OUTPUT_DIR/$FEATURE_SLUG-progress.txt"
-DRAFT_PATH=".claude/forge-draft.md"
-STATE_PATH=".claude/forge-${FEATURE_SLUG}.md"
+DRAFT_PATH="$OUTPUT_DIR/$FEATURE_SLUG/draft.md"
+STATE_PATH="$OUTPUT_DIR/$FEATURE_SLUG/state.md"
 SURVEY_DIR="$OUTPUT_DIR/$FEATURE_SLUG/survey"
 REALITY_PATH="$OUTPUT_DIR/$FEATURE_SLUG/reality.md"
 TIMESTAMP=$(date +%Y-%m-%d)

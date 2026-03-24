@@ -13,7 +13,7 @@ Resume an interrupted specification interview.
 First, scan for all existing interview state files:
 
 ```bash
-ls -la .claude/forge-*.md 2>/dev/null || echo "NO_STATE_FILES"
+ls -la forge-specs/*/state.md 2>/dev/null || echo "NO_STATE_FILES"
 ```
 
 ## STEP 2: HANDLE RESULTS
@@ -33,7 +33,7 @@ Then STOP — do not continue.
 
 ### If state files exist:
 
-For each `.claude/forge-*.md` file found (exclude `forge-draft.md`), read the YAML frontmatter to extract:
+For each `forge-specs/*/state.md` file found (exclude `forge-draft.md`), read the YAML frontmatter to extract:
 - `feature_name` — The human-readable feature name
 - `started_at` — When the interview was started
 - `phase` — Which phase was in progress (R0_SURVEY, R1_SYNTHESIZE, R2_INTERVIEW, R3_SPEC, R4_VALIDATE)
@@ -47,7 +47,7 @@ Then present the list to the user using AskUserQuestion with options like:
 Once the user selects an interview:
 
 1. Read the full state file content (includes the complete prompt)
-2. Read the draft spec file at `.claude/forge-draft.md` if it exists
+2. Read the draft spec file at `forge-specs/*/draft.md` if it exists
 3. Check the `phase` field to determine where to resume:
 
 ### Resume from R0_SURVEY:

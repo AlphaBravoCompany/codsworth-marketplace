@@ -106,7 +106,7 @@ The key difference: every question references specific findings from the survey.
 ## Output
 
 **During interview:**
-- Draft spec: `.claude/forge-draft.md`
+- Draft spec: `forge-specs/{slug}/draft.md`
 - Survey data: `docs/recon/{slug}/survey/`
 - Reality doc: `docs/recon/{slug}/reality.md`
 
@@ -140,7 +140,7 @@ Forge plans. Foundry builds. Ship with confidence.
 If you've already run GSD research (`/gsd:new-project`), pass it as context:
 
 ```
-/forge:plan "my feature" --context .claude/lisa-context-my-feature.md
+/forge:plan "my feature" --context forge-specs/my-feature.md
 ```
 
 Forge will detect GSD research and adapt the interview to skip already-answered questions while probing gaps.

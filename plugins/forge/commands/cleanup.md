@@ -13,13 +13,13 @@ Remove all Forge interview state files to reset the plugin state.
 First, check what state files exist:
 
 ```bash
-ls -la .claude/forge-*.md 2>/dev/null || echo "NO_STATE_FILES"
+ls -la forge-specs/*/state.md 2>/dev/null || echo "NO_STATE_FILES"
 ```
 
 Also check for survey data:
 
 ```bash
-ls -d docs/recon/*/ 2>/dev/null || echo "NO_SURVEY_DATA"
+ls -d forge-specs/*/survey/ 2>/dev/null || echo "NO_SURVEY_DATA"
 ```
 
 ## STEP 2: HANDLE RESULTS
@@ -37,23 +37,20 @@ Then STOP.
 List the files that will be deleted, then ask the user for confirmation using AskUserQuestion:
 
 > "Found N state files and M survey directories. What should I clean up?"
-> - "State files only" — Remove .claude/forge-*.md (keep survey data for reference)
-> - "Everything" — Remove state files AND survey data in docs/recon/
+> - "State files only" — Remove state.md and draft.md (keep survey data for reference)
+> - "Everything" — Remove entire forge-specs/ directory
 > - "Cancel" — Don't delete anything
 
 Then execute based on their choice:
 
 **State files only:**
 ```bash
-rm .claude/forge-*.md
-rm -f .claude/forge-draft.md
+rm -f forge-specs/*/state.md forge-specs/*/draft.md
 ```
 
 **Everything:**
 ```bash
-rm .claude/forge-*.md
-rm -f .claude/forge-draft.md
-rm -rf docs/recon/
+rm -rf forge-specs/
 ```
 
 Then confirm to the user:
@@ -68,6 +65,5 @@ Then confirm to the user:
 ## IMPORTANT NOTES
 
 - This command only deletes state and survey files
-- It does NOT delete any completed specs in `docs/specs/`
-- Completed specifications are permanent and unaffected by cleanup
+- It does NOT delete completed specs (the .md and .json files in forge-specs/)
 - Use this when you want to abandon all in-progress interviews
