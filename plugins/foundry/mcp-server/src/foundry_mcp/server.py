@@ -338,9 +338,6 @@ _DISPATCH = {
     "Verify-Citations": lambda args: verify_citations(
         spec_path=args["spec_path"], report_path=args["report_path"],
         strict=args.get("strict", False), project_root=_project_root),
-        spec_path=args.get("spec_path"), output_dir=args.get("output_dir"), project_root=_project_root),
-        artifact_type=args.get("artifact_type"), include_content=args.get("include_content", False),
-        project_root=_project_root),
     "Foundry-Init": lambda args: foundry_init(
         spec_path=args.get("spec_path"), temper=args.get("temper", False), no_ui=args.get("no_ui", False),
         resume=args.get("resume"), ticket=args.get("ticket", ""), description=args.get("description", ""),
