@@ -121,7 +121,7 @@ servers["foundry"] = {
 if "playwright" not in servers:
     servers["playwright"] = {
         "command": "npx",
-        "args": ["@anthropic-ai/mcp-playwright@latest"]
+        "args": ["@playwright/mcp@latest", "--caps", "vision,devtools", "--output-dir", ".playwright-mcp"]
     }
 
 # Serena MCP (LSP wiring for TRACE)
