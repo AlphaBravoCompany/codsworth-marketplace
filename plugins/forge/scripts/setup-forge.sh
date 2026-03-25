@@ -213,6 +213,14 @@ Explore the architecture of this codebase$(if [[ -n "$SCOPE_GUIDANCE" ]]; then e
 - How components communicate (imports, events, APIs, queues)
 - Entry points (main files, handler registrations, route definitions)
 - Configuration management (how config reaches code)
+
+FOUNDATION HEALTH — for each major component you survey, assess:
+- Does the logic actually work? Read function bodies, not just signatures
+- Are there stub functions (correct signature, empty/hardcoded body)?
+- Are there handlers that return success but don't do real work?
+- Are there broken patterns (e.g., middleware registered but never applied)?
+Flag anything that looks structurally complete but is logically hollow.
+Write a "## Foundation Issues" section at the end with anything you found.
 $SCOPE_GUIDANCE
 
 Write your findings as structured markdown to: $SURVEY_DIR/architecture.md
@@ -228,6 +236,14 @@ Explore data models, storage, and data flow in this codebase$(if [[ -n "$SCOPE_G
 - Data access patterns (repositories, DAOs, direct queries)
 - Data flow: input → validation → processing → storage → response
 - External data sources (APIs, files, caches, queues)
+
+FOUNDATION HEALTH — for each data path you trace, assess:
+- Does the data actually flow end-to-end? (input → DB → response)
+- Are there models defined but never written to or read from?
+- Are there repo methods that exist but are never called by services?
+- Does validation actually run, or is it defined but bypassed?
+- Are there fields in the schema that nothing populates?
+Flag broken data flows. Write a "## Foundation Issues" section at the end.
 $SCOPE_GUIDANCE
 
 Write your findings as structured markdown to: $SURVEY_DIR/data.md
@@ -244,6 +260,15 @@ Explore the public surface area of this codebase$(if [[ -n "$SCOPE_GUIDANCE" ]];
 - Exported functions and public interfaces
 - Extension points (where new features plug in)
 - Authentication/authorization patterns
+
+FOUNDATION HEALTH — for each endpoint/page/component you survey, assess:
+- Does the handler do real work, or return hardcoded/empty responses?
+- Do UI components actually call APIs and render data, or are they shells?
+- Are there registered routes whose handlers are stubs or TODOs?
+- Do forms submit data that the backend actually processes?
+- Are there components imported but never rendered in any page?
+Flag anything that presents a working surface but has hollow logic underneath.
+Write a "## Foundation Issues" section at the end.
 $SCOPE_GUIDANCE
 
 Write your findings as structured markdown to: $SURVEY_DIR/surface.md
@@ -343,6 +368,17 @@ Structure the reality document as:
 - What existing code to extend vs. create new
 - Dependencies to be aware of
 
+## Foundation Health
+- Issues found by survey agents in their "Foundation Issues" sections
+- Existing code that is logically broken (stubs, hardcoded returns, hollow handlers)
+- Data flows that don't complete (form submits but backend ignores fields)
+- Components that look complete but don't do real work
+- Code the new feature will BUILD ON that needs fixing first
+- **For each issue: what it is, where it is (file:line), and whether the new feature depends on it**
+
+If foundation issues exist that the new feature depends on, these MUST become
+requirements in the spec (fix X before building Y). Do not assume existing code works.
+
 ## Risks & Constraints
 - Tight coupling areas
 - Missing test coverage
@@ -350,7 +386,7 @@ Structure the reality document as:
 - Performance considerations
 \`\`\`
 
-This document is the foundation for every interview question. Every question you ask in R2 should reference specific findings from this document.
+This document is the foundation for every interview question. Every question you ask in R2 should reference specific findings from this document. If foundation health issues were found, ask the user whether to fix them as part of this feature or treat them as separate work.
 
 **After writing the reality document, proceed to PHASE R2.**
 
