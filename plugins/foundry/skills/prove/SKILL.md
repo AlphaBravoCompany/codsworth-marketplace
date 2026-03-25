@@ -115,11 +115,44 @@ Document as "Scenario Coverage" in the report:
 - Count: OTs satisfied vs total. If ANY OT is NO, the feature is not done.
 - Features with unsatisfied OTs are THIN and must be flagged.
 
+## Step 1.7: Displacement Audit — What Should NOT Exist
+
+After verifying what the spec requires, flip the question: **what code exists that
+the spec does NOT justify?** This is the surgeon's eye — ruthless identification
+of code that should be cut.
+
+For each file touched by the implementation:
+
+1. **List every function/type/route** in the file
+2. **For each one, find its spec justification** — which VC-N item requires it?
+3. **No justification = DISPLACED** — it's either:
+   - **Dead code**: unreferenced, never called (verify with `find_referencing_symbols`)
+   - **Superseded**: replaced by new implementation but not removed
+   - **Orphaned**: was part of old approach, new approach doesn't need it
+   - **Speculative**: added "just in case" with no spec backing
+
+4. **Report as DX-N findings** alongside CR-N findings:
+   - DX-1: `old_auth_handler` in auth.go — superseded by new middleware, 0 references
+   - DX-2: `LegacyUserType` in models.go — old type, new `User` type replaces it
+   - DX-3: `utils/format_date.go` — entire file unused, no imports
+
+**Verdict additions:**
+- **DISPLACED**: Code exists but serves no spec requirement. Should be removed.
+- **BLOAT**: Code technically works but duplicates what another function already does.
+
+**In foundry PROVE/ASSAY mode:** DX-N findings become defects with fix direction
+"DELETE — no spec justification, N references." GRIND teammates remove the dead code
+as part of their fix cycle.
+
+**The surgeon's rule:** If you can't point to a spec requirement that needs this code,
+it shouldn't exist. New features should REPLACE old code, not pile on top.
+
 ## Step 2: Assess
 
 1. **Tally**: VERIFIED vs each non-verified category. What % is truly implemented?
-2. **Critical path gaps**: which non-VERIFIED items are on the core user journey?
-3. **Cross-cutting concerns**: auth on all protected endpoints? Errors propagated
+2. **Displacement tally**: how many functions/files exist without spec justification?
+3. **Critical path gaps**: which non-VERIFIED items are on the core user journey?
+4. **Cross-cutting concerns**: auth on all protected endpoints? Errors propagated
    with context or swallowed? Race conditions? Input validation at boundaries?
 
 ## Step 3: Patterns

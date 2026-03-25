@@ -165,6 +165,45 @@ empty state, permissions. If observable truths are unsatisfied, flag as `THIN-{N
 Check interactions: compatible data formats between stories? Cascade/guard on
 deletion? Concurrency handling when multiple stories modify the same resource?
 
+#### End-to-End User Workflow Simulation (Plumber Check)
+
+Don't just verify individual function wiring — simulate what a REAL USER does.
+For each major feature, walk through the complete workflow as a user would:
+
+1. **Map the workflow** — what sequence of actions does a user perform?
+   Example: "Create credential" = navigate to page → click "New" → fill form →
+   submit → see success → verify it appears in list → click it → see details
+
+2. **Trace the FULL stack for each step:**
+   - Frontend: route → component → API call → state update → render
+   - Backend: handler → validation → service → repo → DB → response
+   - Return: response → frontend state → re-render → what user sees
+
+3. **Identify breaks in the chain** — where does the flow disconnect?
+   - Button exists but onClick is empty
+   - API call fires but response isn't used
+   - Data saved but list page doesn't refresh
+   - Success toast shows but data didn't actually persist
+   - Form submits but no loading state during the request
+
+4. **Test the RETURN TRIP** — the most commonly broken flow:
+   - Create something → does it show in the list?
+   - Edit something → does the edit persist after navigation?
+   - Delete something → does it disappear from all views?
+   - If any return trip fails, it's a **BREAK** finding (worse than a GAP)
+
+5. **Report as PL-N findings:**
+   - PL-1: "Create credential flow breaks at step 4 — form submits (POST /api/credentials
+     returns 201) but list page doesn't re-fetch, so new credential is invisible until refresh"
+   - PL-2: "Edit flow — EditCredential component reads credential by ID but DetailPage
+     doesn't pass the ID prop, so edit form loads empty"
+
+**PL-N findings are high severity** — they represent flows that a user will hit on
+their first interaction. A feature with working functions but broken workflows is
+worse than a missing feature (users expect it to work and get confused when it doesn't).
+
+In foundry TRACE mode, PL-N findings become defects alongside L-N and THIN-N findings.
+
 ### Step 3: CLASSIFY — Number the Findings
 
 - **L-1, L-2...** — Gaps. Description, story ref, file:line, what's missing.

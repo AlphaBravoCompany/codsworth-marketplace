@@ -11,7 +11,7 @@
       "name": "forge",
       "source": "./plugins/forge",
       "description": "Codebase-aware specification engine. Researches your code deeply, then conducts a grounded interview to produce foundry-ready specs. Forge plans. Foundry builds.",
-      "version": "1.3.1",
+      "version": "1.4.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
@@ -21,7 +21,7 @@
       "name": "foundry",
       "source": "./plugins/foundry",
       "description": "Autonomous build-verify-fix loop with 4-stream verification (TRACE, PROVE, SIGHT, TEST), defect grinding, and spec-before-code assay. Forge plans. Foundry builds.",
-      "version": "1.3.1",
+      "version": "1.4.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
