@@ -38,6 +38,7 @@ from foundry_mcp.tools.forge_spec import (
     forge_spec_start,
     forge_spec_status,
 )
+from foundry_mcp.tools.foundry_validate import foundry_validate_castings
 from foundry_mcp.tools.validation import validate_report
 
 # Global project root, set via CLI arg
@@ -115,7 +116,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "required": ["phase"],
                 "properties": {
-                    "phase": {"type": "string", "enum": ["cast", "inspect", "grind", "assay", "temper", "done"]},
+                    "phase": {"type": "string", "enum": ["validate", "cast", "inspect", "grind", "assay", "temper", "nyquist", "done"]},
                 },
             },
         ),
@@ -126,7 +127,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "required": ["phase"],
                 "properties": {
-                    "phase": {"type": "string", "enum": ["start_cast", "cast", "inspect_clean", "grind_start", "assay_fail", "temper", "done"]},
+                    "phase": {"type": "string", "enum": ["research_done", "decompose_done", "validate_done", "start_cast", "cast", "inspect_clean", "grind_start", "assay_fail", "temper", "nyquist_done", "done"]},
                 },
             },
         ),
@@ -243,6 +244,11 @@ async def list_tools() -> list[Tool]:
                     "findings_count": {"type": "integer", "default": 0},
                 },
             },
+        ),
+        Tool(
+            name="Foundry-Validate-Castings",
+            description="Validate castings against spec across 6 dimensions before CAST. Returns pass/fail with revision hints.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="Foundry-Team-Up",
@@ -368,6 +374,7 @@ _DISPATCH = {
         stream=args["stream"], cycle=args["cycle"], items_checked=args.get("items_checked", 0),
         items_total=args.get("items_total", 0), findings_count=args.get("findings_count", 0),
         project_root=_project_root),
+    "Foundry-Validate-Castings": lambda args: foundry_validate_castings(project_root=_project_root),
     "Foundry-Team-Up": lambda args: foundry_register_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Team-Down": lambda args: foundry_unregister_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Directive": lambda args: foundry_inject_directive(

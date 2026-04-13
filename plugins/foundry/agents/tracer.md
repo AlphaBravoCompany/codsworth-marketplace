@@ -35,14 +35,37 @@ Read the spec/scope and extract every declared:
 - Type, interface, or struct
 - Data flow (input -> processing -> output)
 
-### 2. Verify Each Symbol
+### 2. Three-Level Verification
 
-For each declared symbol:
+For each declared symbol, apply ALL three verification levels. All must pass for verdict WIRED. Do NOT skip Level 2.
 
-1. **Existence** — `find_symbol(name_path, include_body: false)` — does it exist? Record file and line.
-2. **Callers** — `find_referencing_symbols(name_path)` — is it called? By what? Record all callers.
-3. **Implementation** — `find_symbol(name_path, include_body: true)` — does the body match the spec?
-4. **Exports** — `get_symbols_overview(file)` — are all expected exports present in the module?
+| Level | Check | Pass = | Fail = |
+|-------|-------|--------|--------|
+| 1. EXISTS | Symbol/file present in codebase | Continue to Level 2 | MISSING |
+| 2. SUBSTANTIVE | Real implementation, not a stub | Continue to Level 3 | THIN |
+| 3. WIRED | Called/imported by other code from expected entry points | WIRED | UNWIRED |
+
+**Level 1: EXISTS**
+- `find_symbol(name_path, include_body: false)` — does it exist?
+- Record file and line number
+- If not found → verdict MISSING, stop checking this symbol
+
+**Level 2: SUBSTANTIVE** (stub detection)
+- `find_symbol(name_path, include_body: true)` — read the full body
+- Check for stub patterns:
+  - Function body is empty, returns hardcoded value, or only logs
+  - React component returns placeholder markup (`<div>Component</div>`)
+  - API handler returns static response without querying data
+  - Event handler body is `{}` or `console.log` only
+  - Variable declared but set to empty/null/hardcoded value
+- If stub detected → verdict THIN, record the specific stub pattern found
+
+**Level 3: WIRED**
+- `find_referencing_symbols(name_path)` — is it called? By what?
+- `get_symbols_overview(file)` — are all expected exports present?
+- Record all callers with file paths and line numbers
+- If no callers from expected entry points → verdict UNWIRED
+- If called from expected entry points → verdict WIRED
 
 ### 3. Trace Call Chains
 

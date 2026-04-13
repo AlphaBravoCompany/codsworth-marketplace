@@ -136,6 +136,21 @@ After all files are written, generate `docs/specs/{feature}-decomposed/manifest.
           "domain_type": "predefined" | "custom",
           "complexity": "low" | "medium" | "high",
           "status": "pending",
+          "must_haves": {
+            "truths": [
+              "User can log in with email/password",
+              "Invalid credentials return 401"
+            ],
+            "artifacts": [
+              {"path": "src/api/auth/login.ts", "provides": "Login endpoint", "min_lines": 30},
+              {"path": "src/components/LoginForm.tsx", "provides": "Login UI", "min_lines": 50}
+            ],
+            "key_links": [
+              {"from": "LoginForm.tsx", "to": "/api/auth/login", "via": "fetch in onSubmit"},
+              {"from": "login.ts", "to": "User model", "via": "prisma query"}
+            ]
+          },
+          "research_context": "See research/auth.md for JWT best practices",
           "scrutiny": {
             "status": "pending",
             "iterations": 0,
@@ -158,6 +173,12 @@ After all files are written, generate `docs/specs/{feature}-decomposed/manifest.
   }
 }
 ```
+
+**must_haves structure** (required for each file):
+- **truths**: Testable assertions that prove the domain works. Should be user-facing, observable behaviors (not implementation details). Minimum 3 per file.
+- **artifacts**: Expected files with their purpose and minimum substantive line count. `min_lines` prevents stubs from passing — a 5-line "login endpoint" is a red flag.
+- **key_links**: How artifacts connect to each other and to other domains. These form the wiring verification checklist for the TRACE phase.
+- **research_context**: Optional pointer to research findings relevant to this domain (from F0 RESEARCH phase).
 
 **Wave computation**: Group files into parallel execution batches. Wave 1 = files with no dependencies. Wave 2 = files whose dependencies are all in wave 1. Etc. Detect and report circular dependencies as errors.
 

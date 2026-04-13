@@ -68,6 +68,42 @@ Output per-requirement verdicts with citations to exact spec text and code locat
 | MISSING   | No implementation found for this requirement              |
 | WRONG     | Implementation contradicts the spec                       |
 
+## Stub Detection (Check Level 2: Substantive)
+
+After confirming code exists (Level 1), check it's REAL implementation — not a placeholder:
+
+### React Stubs (RED FLAGS)
+- `return <div>Component</div>` or `return <div>Placeholder</div>`
+- `return <div>{name}</div>` with no actual functionality
+- `onClick={() => {}}` or `onChange={() => console.log('clicked')}`
+- `onSubmit={(e) => e.preventDefault()}` with only default prevention
+- `useEffect(() => {}, [])` with empty body
+- `useState` declared but value never rendered in JSX
+- Component returns hardcoded markup with no dynamic data
+
+### API Stubs (RED FLAGS)
+- `return Response.json({ message: "Not implemented" })`
+- `return Response.json([])` — empty array with no DB query
+- `return Response.json({ success: true })` — static response, no actual operation
+- Handler that catches errors but returns 200 regardless
+- Endpoint that reads request body but ignores it
+
+### Wiring Stubs (RED FLAGS)
+- `fetch('/api/path')` with no await/then/assignment of result
+- `await db.query()` but function returns static response (not query result)
+- Import statement exists but imported symbol never called
+- Event listener registered but callback is empty or console.log only
+- Form with action but no submit handler wired up
+- Context provider wrapping children but providing hardcoded/empty values
+
+### Verdict Rule
+If ANY stub pattern is detected, the verdict is **HOLLOW** (not VERIFIED), even if the spec requirement technically "exists" in the code. A stub is worse than missing code — it actively deceives automated checks into thinking functionality exists.
+
+When reporting HOLLOW verdicts for stubs, include:
+- The exact stub pattern found
+- The file and line number
+- What the stub SHOULD be doing based on the spec
+
 ## Output Format
 
 ```json

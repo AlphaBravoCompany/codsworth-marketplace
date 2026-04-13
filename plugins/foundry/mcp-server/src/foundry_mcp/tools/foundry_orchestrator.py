@@ -108,7 +108,19 @@ def foundry_gate(
         }
     nac.unlink(missing_ok=True)
 
-    if phase == "cast":
+    if phase == "validate":
+        # Gate for F0.9 VALIDATE — castings must exist
+        manifest = fdir / "castings" / "manifest.json"
+        if not manifest.exists():
+            return {"phase": phase, "passed": False, "reason": "No manifest.json", "hint": "Run DECOMPOSE first to create castings"}
+        data = _load_json(manifest)
+        count = len(data.get("castings", []))
+        checklist.append({"check": "manifest_exists", "ok": True})
+        if count < 1:
+            return {"phase": phase, "passed": False, "reason": "No castings in manifest", "hint": "Add castings before validating"}
+        checklist.append({"check": f"castings_count={count}", "ok": True})
+
+    elif phase == "cast":
         manifest = fdir / "castings" / "manifest.json"
         if not manifest.exists():
             return {"phase": phase, "passed": False, "reason": "No manifest.json", "hint": "Run foundry_init and add castings"}
@@ -1086,6 +1098,26 @@ def foundry_next_action(
         "\n- Zero approval gates. The foundry runs until F6 DONE or an error stops it."
     )
 
+    # Context budget tracking
+    fdir_cb = get_run_dir(project_root)
+    if fdir_cb and fdir_cb.exists():
+        state_cb = _load_json(fdir_cb / "state.json")
+        cycle = state_cb.get("cycle", 0)
+        # Estimate context usage based on cycle count
+        if cycle >= 3:
+            usage = "critical"
+        elif cycle >= 2:
+            usage = "high"
+        elif cycle >= 1:
+            usage = "moderate"
+        else:
+            usage = "low"
+        result["context_budget"] = {
+            "cycles_completed": cycle,
+            "estimated_usage": usage,
+            "recommendation": "Consider /clear and /foundry:resume if quality is degrading" if usage in ("high", "critical") else "Context budget healthy",
+        }
+
     result["display"] = _format_status_display(project_root)
 
     fdir = get_run_dir(project_root)
@@ -1127,8 +1159,10 @@ def _format_status_display(project_root: str) -> str:
             pass
 
     phases = [
-        ("F0", "DECOMPOSE"), ("F1", "CAST"), ("F2", "INSPECT"),
-        ("F3", "GRIND"), ("F4", "ASSAY"), ("F5", "TEMPER"), ("F6", "DONE"),
+        ("F0", "RESEARCH"), ("F0.5", "DECOMPOSE"), ("F0.9", "VALIDATE"),
+        ("F1", "CAST"), ("F2", "INSPECT"),
+        ("F3", "GRIND"), ("F4", "ASSAY"), ("F5", "TEMPER"),
+        ("F5.5", "NYQUIST"), ("F6", "DONE"),
     ]
 
     phase_names = dict(phases)
