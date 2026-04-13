@@ -68,6 +68,13 @@ Output per-requirement verdicts with citations to exact spec text and code locat
 | MISSING   | No implementation found for this requirement              |
 | WRONG     | Implementation contradicts the spec                       |
 
+## Deep Reference
+
+For the full stub-pattern library (comment stubs, placeholder text, trivial impls, hardcoded values, mock-vs-real detection, wiring checks), read:
+`@${CLAUDE_PLUGIN_ROOT}/references/verification-patterns.md`
+
+The inline patterns below are the top red flags. If you need more coverage, consult the full reference.
+
 ## Stub Detection (Check Level 2: Substantive)
 
 After confirming code exists (Level 1), check it's REAL implementation — not a placeholder:

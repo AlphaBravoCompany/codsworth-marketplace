@@ -35,6 +35,11 @@ Read the spec/scope and extract every declared:
 - Type, interface, or struct
 - Data flow (input -> processing -> output)
 
+### Deep Reference
+
+For the full verification-patterns library (stub patterns, wiring checks, substantiveness heuristics), consult:
+`@${CLAUDE_PLUGIN_ROOT}/references/verification-patterns.md`
+
 ### 2. Three-Level Verification
 
 For each declared symbol, apply ALL three verification levels. All must pass for verdict WIRED. Do NOT skip Level 2.

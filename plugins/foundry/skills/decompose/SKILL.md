@@ -10,6 +10,13 @@ effort: high
 
 Break a Lisa-produced master spec into a directory of small, detailed, self-contained domain files ("buildable work packets") ready for Mill execution.
 
+## Deep Methodology Reference
+
+For task sizing, vertical slicing, interface-first ordering, goal-backward methodology, file ownership rules, and decomposition anti-patterns, consult:
+`@${CLAUDE_PLUGIN_ROOT}/references/decomposition-methodology.md`
+
+Read it before decomposing complex specs. Skip it for simple specs that mirror existing codebase patterns.
+
 ## Arguments
 
 `/decompose <path-to-master-spec>`

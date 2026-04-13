@@ -45,11 +45,12 @@ DESCRIPTION:
   interviews. It deeply studies your codebase FIRST, then asks smart questions
   grounded in what it found.
 
-  Phase R0: SURVEY    - Parallel agents explore architecture, data, surface, infra
-  Phase R1: SYNTHESIZE - Merge findings into codebase reality document
-  Phase R2: INTERVIEW  - Multi-round adaptive interview (grounded in R0/R1)
-  Phase R3: SPEC       - Generate foundry-ready spec (US/FR/NFR/AC/OT IDs)
-  Phase R4: VALIDATE   - Self-check all file refs, patterns, coverage
+  Phase R0:   SURVEY     - Parallel agents explore architecture, data, surface, infra
+  Phase R1:   SYNTHESIZE  - Merge findings into codebase reality document
+  Phase R1.5: RESEARCH    - Targeted online research to verify stale assumptions
+  Phase R2:   INTERVIEW   - Multi-round adaptive interview (grounded in R0/R1/R1.5)
+  Phase R3:   SPEC        - Generate foundry-ready spec (US/FR/NFR/AC/OT IDs)
+  Phase R4:   VALIDATE    - Self-check all file refs, patterns, coverage
 
   The interview continues until you say "done" or "finalize".
 
@@ -388,9 +389,73 @@ requirements in the spec (fix X before building Y). Do not assume existing code 
 
 This document is the foundation for every interview question. Every question you ask in R2 should reference specific findings from this document. If foundation health issues were found, ask the user whether to fix them as part of this feature or treat them as separate work.
 
-**After writing the reality document, proceed to PHASE R2.**
+**After writing the reality document, proceed to PHASE R1.5 (RESEARCH).**
 
 SYNTH_PROMPT_EOF
+fi
+
+# =========================================================================
+# PHASE R1.5: RESEARCH — Targeted online research to kill stale assumptions
+# =========================================================================
+
+if [[ "$NO_SURVEY" != "true" ]]; then
+  cat >> "$PROMPT_FILE" << RESEARCH_PROMPT_EOF
+
+## PHASE R1.5: RESEARCH — Targeted Online Research
+
+Before interviewing, verify your technical assumptions against the current ecosystem. Your training data is 6-18 months stale — library versions, API surfaces, and deprecated patterns may have shifted. Bad research targets (generic "how does X work") waste time. Good research targets verify specific claims in reality.md.
+
+### Purpose
+
+Read reality.md (the document R1 just wrote) and identify 2-4 narrow technical claims that would be **wrong if your training is stale**. Examples:
+- Reality.md says "codebase uses htmx 1.9" → research: is 1.9 still current? Any breaking changes in 2.x relevant to this feature?
+- Reality.md says "uses client-go v0.29 for Kubernetes API" → research: current stable version? Any deprecated APIs since 0.29?
+- Feature requires a library not yet in the codebase → research: what's the current recommended option?
+
+If reality.md has **no** verifiable technical claims (pure design spec, no libraries), **skip R1.5 entirely** and write a one-line note in state.md: "R1.5 skipped — no technical claims to verify."
+
+### Procedure
+
+1. Read reality.md in full
+2. Identify 2-4 specific claims to verify. Write them down as domain slugs (e.g., "htmx-2x-sse-extension", "client-go-deployments-v0-30")
+3. For each domain, spawn a \`researcher\` agent via the Agent tool. Use \`subagent_type: "Agent"\` and pass the full content of \`\${CLAUDE_PLUGIN_ROOT}/agents/researcher.md\` as the prompt. Include in the prompt:
+   - The specific claim from reality.md to verify
+   - The output path: \`$SURVEY_DIR/research-{domain-slug}.md\`
+   - Any locked decisions from user context (if passed)
+4. Spawn ALL researchers in a SINGLE message for parallelism
+5. Wait for all researchers to return
+6. Append a \`## Research Findings\` section to reality.md:
+   \`\`\`markdown
+   ## Research Findings
+
+   ### {domain-slug-1}
+   **Confidence:** HIGH / MEDIUM / LOW
+   **Verdict:** [one-line summary of what the researcher found]
+   **Actionable:** [what to tell the interviewer or flag in the spec]
+
+   ### {domain-slug-2}
+   ...
+   \`\`\`
+
+### Rules
+
+- **Never** research generic topics ("what is htmx?"). Always verify a specific claim.
+- **Never** spawn more than 4 researchers per session. If there are more than 4 claims, pick the 4 highest-risk ones.
+- **Never** skip R1.5 unless there are no technical claims — stale library assumptions are the #1 source of bad specs.
+- **Carry confidence forward.** If a researcher returns LOW confidence, the interviewer must ask the user to decide rather than assuming.
+- **Conflicts go to the user.** If research contradicts something the user said in the initial prompt, surface it in R2 INTERVIEW as an explicit question: "You mentioned X but research shows Y — which way?"
+
+**After writing research findings to reality.md, proceed to PHASE R2.**
+
+RESEARCH_PROMPT_EOF
+else
+  cat >> "$PROMPT_FILE" << 'RESEARCH_SKIP_EOF'
+
+## PHASE R1.5: RESEARCH — Skipped (--no-survey mode)
+
+R1.5 is skipped because --no-survey was passed. No codebase reality doc = no targeted research possible. Proceed directly to PHASE R2.
+
+RESEARCH_SKIP_EOF
 fi
 
 # =========================================================================

@@ -54,18 +54,42 @@ Follow the phases in order. Use MCP tools (`Foundry-Next`, `Foundry-Gate`, `Foun
 
 **Purpose:** Investigate HOW to build before decomposing. Prevents wrong technology choices that surface as defects in INSPECT.
 
-1. After `Foundry-Init`, read the spec fully
-2. Identify 2-4 technical domains that need research (e.g., "WebSocket auth", "real-time sync", "file upload handling")
-3. Spawn parallel Explore agents (model: **sonnet**) — one per domain
-4. Each researcher:
-   - Checks current library docs (Context7 if available)
-   - Investigates standard patterns and anti-patterns
-   - Reports confidence levels (HIGH/MEDIUM/LOW)
-   - Writes research summary to `foundry-archive/{run}/research/`
-5. Synthesize research findings into context for decomposition
-6. Proceed to F0.5 DECOMPOSE
+1. After `Foundry-Init`, read the spec fully.
+2. Identify 2-4 technical domains that need research. A domain is a specific technical area, not a broad category — good examples: "listing Kubernetes Deployments in Go with client-go", "SSE auto-refresh with htmx", "Go template rendering with embed.FS". Bad examples: "backend", "UI".
+3. For each domain, spawn a **researcher agent** (one per domain, in parallel, max 4):
+   - Model: **sonnet**
+   - Agent prompt: include the FULL content of `${CLAUDE_PLUGIN_ROOT}/agents/researcher.md`
+   - Pass in the prompt: the domain name, the spec slice this domain covers, any locked decisions from the Forge classification, and the run directory
+   - Each agent writes to `foundry-archive/{run}/research/{domain-slug}-RESEARCH.md`
+4. Wait for ALL researchers to complete. Each returns a JSON summary with confidence level and primary recommendation.
+5. Synthesize the research:
+   - Read each RESEARCH.md
+   - Note any LOW-confidence items or open questions that affect decomposition
+   - If a researcher flagged "teammate must verify before using", decide: either run a follow-up research pass or note the constraint in the casting
+6. Proceed to F0.5 DECOMPOSE. The decompose step will read the research artifacts and populate each casting's `research_context` with the relevant `RESEARCH.md` path(s).
 
-**Skip condition:** If the spec covers well-known patterns with no novel technical challenges, you may skip F0 and proceed directly to F0.5.
+**Skip condition:** If the spec covers well-known patterns that already exist in this exact codebase (e.g., "add a new page that mirrors existing ones"), you may skip F0 and proceed directly to F0.5 — but note in state.json why you skipped, so the decision is auditable.
+
+**Context budget:** Each researcher burns 20-40k tokens in its own context. The lead only reads the final RESEARCH.md summaries (not the raw investigation), so lead context is mostly protected.
+
+**Synthesis (when N >= 4):** If you spawned 4+ researchers, synthesize their outputs with a dedicated agent instead of reading all N files into lead context:
+- Spawn one `research-synthesizer` agent (model: sonnet, prompt: `${CLAUDE_PLUGIN_ROOT}/agents/research-synthesizer.md`)
+- Input: the list of RESEARCH.md paths to consolidate
+- Output: `foundry-archive/{run}/research/SUMMARY.md` with unified recommendations, conflicts, and open questions
+- Lead reads only SUMMARY.md, not the individual RESEARCH.md files
+
+### F0 (optional): CODEBASE MAPPING
+
+**When to run:** Before F0.5 DECOMPOSE, if the codebase is unfamiliar to you or has strict patterns (look for CLAUDE.md with hard rules, an AUDIT.md, a ROADMAP.md with architectural requirements, or a language/framework you haven't worked with recently).
+
+**How:**
+1. Spawn one `codebase-mapper` agent (model: sonnet, prompt: `${CLAUDE_PLUGIN_ROOT}/agents/codebase-mapper.md`)
+2. Pass: project root, focus areas if applicable (e.g., "backend only"), run dir
+3. Agent writes 6 structured files under `foundry-archive/{run}/codebase/`: STACK, ARCHITECTURE, STRUCTURE, CONVENTIONS, INTEGRATIONS, CONCERNS
+4. Agent returns JSON with `top_conventions` — the 3 rules most likely to make the build land wrong if ignored
+5. **Inject `top_conventions` into every casting teammate prompt** during F1 CAST. These are non-negotiable codebase rules, not suggestions.
+
+**Skip condition:** If you've already built in this codebase during an earlier foundry run and the codebase files from that run still exist, reuse them instead of re-mapping.
 
 ---
 
@@ -183,15 +207,21 @@ Sync all findings: `Foundry-Sync`
 
 **Purpose:** Generate tests for uncovered requirements — regression protection.
 
-1. Read verdicts.json — find all VERIFIED requirements
-2. For each, check if automated test exists (grep for test files matching the domain)
-3. For requirements without tests, spawn test-generation agents (model: **sonnet**)
-4. Each agent:
-   - Generates minimal behavioral tests
-   - Runs them
-   - Debugs failures (max 3 iterations)
-   - Commits passing tests
-5. Never mark untested requirements as passing
+1. Read `foundry-archive/{run}/verdicts.json` — find all VERIFIED requirements
+2. Group into batches of 5 requirements each (the nyquist-auditor agent caps at 5 per invocation)
+3. For each batch, spawn a `nyquist-auditor` agent (model: **sonnet**, prompt: `${CLAUDE_PLUGIN_ROOT}/agents/nyquist-auditor.md`)
+4. Pass in: run dir, spec path, the specific requirement IDs for this batch
+5. Each agent:
+   - Detects the project's existing test framework (skips-and-reports if none)
+   - Classifies each requirement as COVERED / UNTESTED / UNDERTESTED
+   - Generates minimal behavioral tests for gaps (NOT full test plans)
+   - Runs each test in the project's runner
+   - Debugs failures with max 3 iterations — but NEVER modifies production code, only test files
+   - If a test fails because production code is wrong, escalates as `ESCALATE_IMPL_BUG` (not a test gap — a real defect)
+   - Commits each passing test as `test(nyquist): regression cover for {req-id}`
+   - Returns JSON with what was generated, skipped, escalated, and still uncovered
+6. Lead reviews escalations: any `ESCALATE_IMPL_BUG` results become defects for a new GRIND cycle
+7. Never mark untested requirements as passing — if nyquist couldn't generate a test, the requirement stays uncovered and is reported in the final F6 DONE report
 
 ---
 
