@@ -38,6 +38,11 @@ from foundry_mcp.tools.forge_spec import (
     forge_spec_start,
     forge_spec_status,
 )
+from foundry_mcp.tools.foundry_handoff import (
+    foundry_accept_casting,
+    foundry_handoff,
+    foundry_spec_hash,
+)
 from foundry_mcp.tools.foundry_spawn import foundry_spawn_teammate
 from foundry_mcp.tools.foundry_validate import foundry_validate_castings
 from foundry_mcp.tools.validation import validate_report
@@ -140,8 +145,8 @@ async def list_tools() -> list[Tool]:
                 "required": ["cycle", "source", "defect_type", "description"],
                 "properties": {
                     "cycle": {"type": "integer"},
-                    "source": {"type": "string", "enum": ["trace", "prove", "research_audit", "sight", "test", "assay", "temper"]},
-                    "defect_type": {"type": "string", "enum": ["MISSING", "WRONG", "THIN", "HOLLOW", "UNWIRED", "BROKEN", "FAIL", "RESEARCH_DEVIATION"]},
+                    "source": {"type": "string", "enum": ["trace", "prove", "research_audit", "coverage_diff", "sight", "test", "assay", "temper"]},
+                    "defect_type": {"type": "string", "enum": ["MISSING", "WRONG", "THIN", "HOLLOW", "UNWIRED", "BROKEN", "FAIL", "RESEARCH_DEVIATION", "COVERAGE_INCOMPLETE", "THIN_MIGRATION"]},
                     "description": {"type": "string"},
                     "spec_ref": {"type": "string"},
                     "symbol": {"type": "string"},
@@ -213,7 +218,7 @@ async def list_tools() -> list[Tool]:
                 "required": ["requirement_id", "verdict", "evidence"],
                 "properties": {
                     "requirement_id": {"type": "string"},
-                    "verdict": {"type": "string", "enum": ["VERIFIED", "HOLLOW", "THIN", "PARTIAL", "MISSING", "WRONG"]},
+                    "verdict": {"type": "string", "enum": ["VERIFIED", "HOLLOW", "THIN", "PARTIAL", "MISSING", "WRONG", "COVERAGE_INCOMPLETE"]},
                     "evidence": {"type": "string"},
                     "spec_text_cited": {"type": "string"},
                     "code_location": {"type": "string"},
@@ -238,7 +243,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "required": ["stream", "cycle", "items_checked"],
                 "properties": {
-                    "stream": {"type": "string", "enum": ["trace", "prove", "research_audit", "sight", "test", "probe"]},
+                    "stream": {"type": "string", "enum": ["trace", "prove", "research_audit", "coverage_diff", "sight", "test", "probe"]},
                     "cycle": {"type": "integer"},
                     "items_checked": {"type": "integer"},
                     "items_total": {"type": "integer"},
@@ -265,6 +270,56 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "casting_id": {"type": ["integer", "string"], "description": "Casting id from manifest.json."},
                     "phase": {"type": "string", "enum": ["cast", "grind"], "default": "cast"},
+                },
+            },
+        ),
+        Tool(
+            name="Foundry-Spec-Hash",
+            description=(
+                "Return the current sha256 of spec.md. Call this before every Foundry-Accept-Casting "
+                "to force a re-read of the spec. Never accept a casting using a hash from memory — "
+                "context rot makes prior-cycle hashes unreliable. (v3.2.0)"
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="Foundry-Handoff",
+            description=(
+                "Record a handoff event in the audit log. Every phase transition and artifact "
+                "production should be recorded with source, destination, hashes, and whether "
+                "the lead re-read the source. Writes to foundry-archive/{run}/handoffs.md and "
+                "handoffs.jsonl. (v3.2.0)"
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["event"],
+                "properties": {
+                    "event": {"type": "string", "description": "e.g. spec_to_casting, casting_to_teammate, teammate_to_accepted, inspect_to_grind, grind_to_inspect, assay_to_done, spec_reread"},
+                    "source": {"type": "string", "description": "Path to source artifact (relative to project root)."},
+                    "destination": {"type": "string", "description": "Path to destination artifact."},
+                    "source_reread": {"type": "boolean", "default": False, "description": "Did the lead just re-read the source before this handoff? Critical for spec→casting and acceptance handoffs."},
+                    "summary": {"type": "string"},
+                    "information_loss": {"type": "string", "description": "If non-empty, describes what was dropped from source in destination."},
+                },
+            },
+        ),
+        Tool(
+            name="Foundry-Accept-Casting",
+            description=(
+                "Gate acceptance of a completed casting. Requires fresh spec_hash and prompt_hash "
+                "(verifies re-reads happened), extracts the casting's acceptance criteria from the "
+                "<spec_requirements> block, checks the completion report for scope-flag phrases. "
+                "Returns the AC list the lead must manually verify. Blocks acceptance if teammate "
+                "reported any scope cuts. (v3.2.0)"
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["casting_id", "spec_hash", "prompt_hash", "completion_report"],
+                "properties": {
+                    "casting_id": {"type": ["integer", "string"]},
+                    "spec_hash": {"type": "string", "description": "Fresh hash from Foundry-Spec-Hash."},
+                    "prompt_hash": {"type": "string", "description": "Hash from Foundry-Spawn-Teammate."},
+                    "completion_report": {"type": "string", "description": "The teammate's completion report text."},
                 },
             },
         ),
@@ -395,6 +450,15 @@ _DISPATCH = {
     "Foundry-Validate-Castings": lambda args: foundry_validate_castings(project_root=_project_root),
     "Foundry-Spawn-Teammate": lambda args: foundry_spawn_teammate(
         casting_id=args["casting_id"], phase=args.get("phase", "cast"), project_root=_project_root),
+    "Foundry-Spec-Hash": lambda args: foundry_spec_hash(project_root=_project_root),
+    "Foundry-Handoff": lambda args: foundry_handoff(
+        event=args["event"], source=args.get("source", ""), destination=args.get("destination", ""),
+        source_reread=args.get("source_reread", False), summary=args.get("summary", ""),
+        information_loss=args.get("information_loss", ""), project_root=_project_root),
+    "Foundry-Accept-Casting": lambda args: foundry_accept_casting(
+        casting_id=args["casting_id"], spec_hash=args["spec_hash"],
+        prompt_hash=args["prompt_hash"], completion_report=args["completion_report"],
+        project_root=_project_root),
     "Foundry-Team-Up": lambda args: foundry_register_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Team-Down": lambda args: foundry_unregister_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Directive": lambda args: foundry_inject_directive(

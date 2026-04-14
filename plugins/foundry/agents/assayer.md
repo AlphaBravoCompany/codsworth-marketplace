@@ -95,14 +95,15 @@ Output per-requirement verdicts with citations to exact spec text and code locat
 
 ## Verdicts
 
-| Verdict   | Meaning                                                  |
-|-----------|----------------------------------------------------------|
-| VERIFIED  | Code fully implements the requirement; evidence provided  |
-| HOLLOW    | Function exists but body is empty, stub, or TODO          |
-| THIN      | Implementation present but missing edge cases or error handling |
-| PARTIAL   | Some aspects implemented, others missing                  |
-| MISSING   | No implementation found for this requirement              |
-| WRONG     | Implementation contradicts the spec                       |
+| Verdict              | Meaning                                                  |
+|----------------------|----------------------------------------------------------|
+| VERIFIED             | Code fully implements the requirement; evidence provided  |
+| HOLLOW               | Function exists but body is empty, stub, or TODO          |
+| THIN                 | Implementation present but missing edge cases or error handling |
+| PARTIAL              | Some aspects implemented, others missing                  |
+| MISSING              | No implementation found for this requirement              |
+| WRONG                | Implementation contradicts the spec                       |
+| COVERAGE_INCOMPLETE  | (MIGRATION specs only) A source item in the casting's `coverage_list` has no destination counterpart. Distinct from MISSING — this is about 1:1 port completeness, not about a new requirement having no code. |
 
 ## Deep Reference
 

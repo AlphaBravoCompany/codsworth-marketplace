@@ -195,14 +195,15 @@ Follow the phases in order. Use MCP tools (`Foundry-Next`, `Foundry-Gate`, `Foun
 
 **Purpose:** Catch decomposition gaps BEFORE building. A 5-minute validation saves hours of GRIND cycles.
 
-1. Call `Foundry-Validate-Castings` which checks 7 dimensions:
+1. Call `Foundry-Validate-Castings` which checks 8 dimensions:
    - **Requirement Coverage** — every spec requirement (US-N, FR-N) appears in at least one casting
    - **Casting Completeness** — every casting has must_haves with truths + artifacts + key_links
    - **Dependency Correctness** — no file overlap between castings, casting order makes sense
    - **Key Links Planned** — artifacts are wired together across castings (not isolated)
    - **Scope Sanity** — no casting has >8 key_files, observable truths are user-facing
    - **Research Integration** — castings reference research findings where applicable
-   - **Prompt Fidelity (v3.0.0)** — every casting has a `casting-{id}-prompt.md` file with a `<spec_requirements>` block containing literal spec substrings (no paraphrasing), and NO forbidden scope-cutting phrases. This is the mechanical enforcement of the "plans are prompts" architecture.
+   - **Prompt Fidelity (v3.0.0)** — every casting has a `casting-{id}-prompt.md` file with a `<spec_requirements>` block containing literal spec substrings (no paraphrasing), and NO forbidden scope-cutting phrases. Mechanical enforcement of "plans are prompts."
+   - **Migration Coverage (v3.1.0)** — **Only active when `spec_type` is `MIGRATION`**. Every casting must have `must_haves.coverage_list` enumerating the source_file:symbol entries it ports. Every entry in the top-level `source_inventory` must be claimed by exactly one casting (no gaps, no duplicates). Enforces full 1:1 coverage for conversion/port/rewrite specs so teammates cannot silently ship a subset.
 
 2. **Revision loop (autonomous):**
    - If issues found → auto-revise castings based on `revision_hints`
@@ -243,15 +244,24 @@ Follow the phases in order. Use MCP tools (`Foundry-Next`, `Foundry-Gate`, `Foun
 10. After all waves: review `foundry-archive/{run}/concerns.md` for teammate-logged concerns. Any concern that relaxes the spec is a decompose failure — re-run F0.5, not a patch here.
 11. Call `Foundry-Gate` for "inspect"
 
-**Acceptance check before marking any casting complete**: re-read the casting's `casting-{id}-prompt.md` `<spec_requirements>` block AND the teammate's completion report. Verify every requirement in the block has a corresponding artifact in the completion report. If the teammate reports ANY intentional out-of-scope items, the casting is NOT accepted — re-dispatch the task with the same prompt (no modification) and explicit instruction to address the missing work. Build-green is necessary but NOT sufficient.
+**Acceptance check before marking any casting complete (v3.2.0 gated):**
+
+1. Call `Foundry-Spec-Hash` → get fresh spec hash (this forces you to re-Read spec.md if you haven't recently)
+2. Call `Foundry-Spawn-Teammate(casting_id=N)` → get fresh prompt hash + the casting's prompt text
+3. Call `Foundry-Accept-Casting(casting_id=N, spec_hash=..., prompt_hash=..., completion_report=<teammate report>)`
+4. The tool returns `acceptance_criteria` — the AC list extracted from the casting's `<spec_requirements>` block
+5. The tool returns a `warning` if the completion report contains scope-flag phrases (out-of-scope, deferred, partial coverage, follow-up, manual validation, etc.) — if `warning` is non-null, the casting is NOT accepted. Re-dispatch with the same frozen prompt.
+6. Even if the tool returns `ok: true` with no warning, YOU (the lead) must verify every item in `acceptance_criteria` has a corresponding artifact or behavior confirmed in the completion report. Build-green is necessary but NOT sufficient.
+7. Call `Foundry-Handoff(event="teammate_to_accepted", source="casting-{id}-prompt.md", destination="casting-{id}-accepted", source_reread=True, summary="accepted")` to record the acceptance in the audit trail.
 
 ---
 
-### F2: INSPECT (5 parallel streams)
+### F2: INSPECT (up to 6 parallel streams)
 
 - **TRACE** — Spawn agent with tracer agent prompt (`agents/tracer.md`). Model: **sonnet**. Uses three-level verification (EXISTS → SUBSTANTIVE → WIRED).
 - **PROVE** — Spawn agent with assayer agent prompt (`agents/assayer.md`). Model: **opus**. Uses spec-before-code with stub detection AND research compliance dimension.
 - **RESEARCH_AUDIT** — Spawn agent with research-auditor agent prompt (`agents/research-auditor.md`). Model: **sonnet**. Reads every RESEARCH.md in `foundry-archive/{run}/research/` + the spec's Informational section, verifies the code honors each recommendation via grep + file reads. Deviations become `RESEARCH_DEVIATION` defects that feed F3 GRIND. Skip if there are no research artifacts AND no Informational items in the spec.
+- **COVERAGE_DIFF (v3.1.0)** — **Only runs when `spec_type` in manifest.json is `MIGRATION`**. Spawn agent with coverage-diff agent prompt (`agents/coverage-diff.md`). Model: **sonnet**. Reads each casting's `must_haves.coverage_list` + the manifest's top-level `source_inventory`, verifies every source symbol has a destination via grep. Missing destinations become `COVERAGE_INCOMPLETE` defects. Symbols with <80% of source's assertion count become `THIN_MIGRATION` defects. Both feed F3 GRIND.
 - **SIGHT** — Lead runs Playwright directly (only exception to "lead never does work")
 - **TEST** — Run test suite inline
 - **PROBE** — Exercise APIs/smoke flows inline
@@ -363,8 +373,11 @@ Do NOT continue operating in degraded context — it causes more GRIND cycles th
 | `Foundry-Next` | Every step: what to do next |
 | `Foundry-Gate` | Before phase transitions |
 | `Foundry-Phase` | Mark phase transitions |
-| `Foundry-Validate-Castings` | F0.9: validate decomposition + prompt fidelity |
+| `Foundry-Validate-Castings` | F0.9: validate decomposition, prompt fidelity, migration coverage |
 | `Foundry-Spawn-Teammate` | F1/F3: read pre-authored teammate prompt for a casting |
+| `Foundry-Spec-Hash` | Before acceptance: get fresh spec hash (forces re-read) |
+| `Foundry-Handoff` | At every phase/artifact transition: record an audit entry |
+| `Foundry-Accept-Casting` | Before marking casting complete: gated AC check |
 | `Foundry-Team-Up` | After TeamCreate |
 | `Foundry-Team-Down` | After TeamDelete |
 | `Foundry-Defect` | Log findings |

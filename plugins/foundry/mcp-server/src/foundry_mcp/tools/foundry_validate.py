@@ -43,6 +43,7 @@ def foundry_validate_castings(
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     castings = manifest.get("castings", [])
+    spec_type = (manifest.get("spec_type") or "GREENFIELD").upper()
 
     if not castings:
         return {"passed": False, "error": "No castings in manifest"}
@@ -323,6 +324,102 @@ def foundry_validate_castings(
             "message": f"{len(dim7_issues)} prompt fidelity issue(s) detected",
         })
     dimensions["prompt_fidelity"] = {"ok": dim7_ok, "issues": dim7_issues}
+
+    # ── Dimension 8: Migration Coverage (v3.1.0) ──
+    #
+    # Only runs when spec_type is MIGRATION. For migration specs, every
+    # casting MUST declare a coverage_list under must_haves enumerating
+    # the source_file:symbol entries it is responsible for porting. Every
+    # source symbol must be assigned to exactly one casting (no duplicates,
+    # no gaps). This enforces the "full 1:1 coverage" invariant that
+    # unambiguous migration specs require.
+    dim8_issues = []
+    if spec_type == "MIGRATION":
+        per_casting_coverage: dict[int, list] = {}
+        all_source_entries: dict[str, list] = {}  # entry -> [casting_ids]
+
+        for c in castings:
+            cid = c.get("id", "?")
+            title = c.get("title", "Untitled")
+            mh = c.get("must_haves", {})
+            cov = mh.get("coverage_list", [])
+
+            if not isinstance(cov, list) or not cov:
+                dim8_issues.append({
+                    "casting": cid,
+                    "title": title,
+                    "issue": "missing_coverage_list",
+                    "detail": (
+                        f"spec_type is MIGRATION but casting #{cid} has no "
+                        f"must_haves.coverage_list. Migration specs require every "
+                        f"casting to enumerate the source_file:symbol entries it ports."
+                    ),
+                })
+                revision_hints.append(
+                    f"Casting #{cid} '{title}': add a coverage_list array under must_haves "
+                    f"with every source_file:symbol this casting must port (1:1)."
+                )
+                continue
+
+            per_casting_coverage[cid] = cov
+            for entry in cov:
+                if not isinstance(entry, str):
+                    dim8_issues.append({
+                        "casting": cid,
+                        "title": title,
+                        "issue": "invalid_coverage_entry",
+                        "detail": f"coverage_list must contain strings like 'path/to/file.go:TestSymbolName', got {entry!r}",
+                    })
+                    continue
+                all_source_entries.setdefault(entry, []).append(cid)
+
+        # Detect duplicates — same source entry claimed by multiple castings
+        dupes = {e: cids for e, cids in all_source_entries.items() if len(cids) > 1}
+        for entry, cids in dupes.items():
+            dim8_issues.append({
+                "issue": "duplicate_coverage_entry",
+                "entry": entry,
+                "castings": cids,
+                "detail": f"source entry '{entry}' is claimed by castings {cids}; assign to exactly one",
+            })
+            revision_hints.append(
+                f"Source entry '{entry}' is in multiple castings ({cids}) — assign to one casting only."
+            )
+
+        # Completeness: if the spec declares a source_inventory, verify every
+        # inventory entry appears in some casting's coverage_list. The Forge
+        # migration mode writes this inventory to the manifest under
+        # `source_inventory` after R2 INTERVIEW.
+        source_inventory = manifest.get("source_inventory", [])
+        if source_inventory:
+            claimed = set(all_source_entries.keys())
+            missing = [e for e in source_inventory if e not in claimed]
+            for entry in missing:
+                dim8_issues.append({
+                    "issue": "uncovered_source_entry",
+                    "entry": entry,
+                    "detail": f"source inventory entry '{entry}' is not covered by any casting",
+                })
+            if missing:
+                revision_hints.append(
+                    f"{len(missing)} source inventory entries are not in any casting's "
+                    f"coverage_list. First 3: {missing[:3]}. Either assign them or justify omission "
+                    f"in the spec."
+                )
+
+    dim8_ok = len(dim8_issues) == 0
+    if not dim8_ok:
+        issues.append({
+            "dimension": "migration_coverage",
+            "severity": "error",
+            "message": f"{len(dim8_issues)} migration coverage issue(s) detected",
+        })
+    dimensions["migration_coverage"] = {
+        "ok": dim8_ok,
+        "issues": dim8_issues,
+        "spec_type": spec_type,
+        "active": spec_type == "MIGRATION",
+    }
 
     # ── Overall result ──
     # Fail on errors, warn on warnings

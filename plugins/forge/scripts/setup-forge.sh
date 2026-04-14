@@ -468,6 +468,64 @@ cat >> "$PROMPT_FILE" << 'INTERVIEW_PROMPT_EOF'
 
 You are now conducting a comprehensive specification interview. This works EXACTLY like a Lisa interview — multi-round, adaptive, progressive — but every question is grounded in your codebase research.
 
+### SPEC TYPE CLASSIFICATION (mandatory first step) — v3.1.0
+
+Before diving into requirements, classify this feature into one of four types. This classification drives downstream Foundry behavior:
+
+| Type | Meaning |
+|---|---|
+| `GREENFIELD` | Building something new that doesn't exist yet |
+| `MIGRATION` | Converting/porting/replacing existing artifacts into a new form (tests, protocols, libraries, ports) |
+| `BUG_FIX` | Fixing specific broken behavior |
+| `REFACTOR` | Restructuring code without changing external behavior |
+
+**Detection triggers** in the user's prompt or early answers:
+- MIGRATION: "convert", "migrate", "port", "replace existing X with", "rewrite Z in Y", "move from A to B"
+- BUG_FIX: "fix", "broken", "race", "regression", "leak", audit finding refs (C-N, H-N)
+- REFACTOR: "extract", "split", "consolidate", "restructure", "clean up"
+- GREENFIELD: default
+
+Use AskUserQuestion early in the interview to confirm the type if ambiguous.
+
+Write the classification to `state.md` as `spec_type: MIGRATION` (or whichever type). **This field is mandatory** in the final spec.json output.
+
+### IF spec_type IS MIGRATION — additional mandatory duties
+
+If the feature is a MIGRATION, you MUST enumerate the full source inventory before finalizing the spec. Wiggle-word language like "equivalent coverage" or "same as legacy" is NOT a complete spec — refuse to proceed to R3 until the enumeration is done.
+
+**Procedure:**
+
+1. **Generate a candidate source inventory via grep.** Example for test migrations:
+   ```bash
+   grep -rHn "^func Test" legacy/tests/ | sed 's/:.*func \(Test[A-Za-z0-9_]*\).*/:\1/' | sort -u
+   ```
+   For library ports, grep exported symbols. For protocol migrations, grep endpoint handlers.
+
+2. **Present the candidate list to the user** via AskUserQuestion. Ask: "I found N source items that would need to be ported. Are any of these out-of-scope? Should any be consolidated?" Let the user prune/confirm.
+
+3. **Ask about the destination naming rule.** How does source map to destination? Common patterns:
+   - Suffix `_v2` on the same filename, same symbol names
+   - New directory with identical structure
+   - New file, renamed symbols
+   - Consolidated into a single file
+   Write this as `destination_naming_rule` in the spec.
+
+4. **Write the inventory to state.md** under a `## source_inventory` section:
+   ```
+   ## source_inventory
+   - legacy/tests/auth_test.go:TestLogin
+   - legacy/tests/auth_test.go:TestLogout
+   - ...
+   ## destination_naming_rule
+   Suffix `_v2` on filename: `auth_test.go` -> `auth_v2_test.go`, same symbol names.
+   ```
+
+5. **The inventory becomes Foundry's source of truth.** F0.5 DECOMPOSE will read it and assign every entry to exactly one casting's `coverage_list`. F2 INSPECT will grep for each destination. Any miss is a defect. The user cannot silently lose coverage.
+
+6. **Never accept "equivalence will be validated manually later" as a complete spec.** If the user says this, push back: "Equivalence can only be validated if it already exists. The point of Foundry is to make equivalence checkable. Help me enumerate the specific source items now, then the teammate ports them 1:1, then we verify 1:1 automatically."
+
+### CRITICAL RULES
+
 ### CRITICAL RULES
 
 #### 1. USE AskUserQuestion FOR ALL QUESTIONS
@@ -1056,11 +1114,12 @@ cat > "$STATE_PATH" << STATE_EOF
 ---
 active: true
 engine: forge
-version: "1.0.0"
+version: "2.0.0"
 phase: "R0_SURVEY"
 iteration: 1
 max_iterations: $MAX_QUESTIONS
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+spec_type: ""  # Set in R2 INTERVIEW: GREENFIELD, MIGRATION, BUG_FIX, REFACTOR
 feature_name: "$FEATURE_NAME"
 feature_slug: "$FEATURE_SLUG"
 output_dir: "$OUTPUT_DIR"

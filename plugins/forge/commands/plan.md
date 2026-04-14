@@ -20,9 +20,55 @@ You are now conducting a codebase-aware specification interview. Follow the inst
 1. **R0: SURVEY** — Spawn 4 parallel Explore agents to research the codebase (unless --no-survey)
 2. **R1: SYNTHESIZE** — Read all survey files, write the reality document
 3. **R1.5: RESEARCH** — Targeted online research to kill assumptions before interviewing
-4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + ecosystem findings
+4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + ecosystem findings, with **spec_type detection and migration source enumeration**
 5. **R3: SPEC** — Generate foundry-ready specification when user says "done"
 6. **R4: VALIDATE** — Verify all file references, pattern references, coverage
+
+## SPEC TYPE DETECTION (R2) — MANDATORY
+
+During R2 INTERVIEW, you MUST classify this feature as one of four types and record the type in `state.md` and in the final `spec.md` frontmatter:
+
+| Type | When | Examples |
+|---|---|---|
+| `GREENFIELD` | Building something new that doesn't exist yet | "add a workloads page", "new auth endpoint", "new dashboard widget" |
+| `MIGRATION` | Converting/porting/replacing an existing artifact into a new form | "convert legacy tests to ginkgo v2", "migrate from REST to gRPC", "port the go bindings to python", "rewrite the parser in Rust" |
+| `BUG_FIX` | Fixing specific broken behavior | "certificate rotation loses old cert on failure", "race in the cache invalidation" |
+| `REFACTOR` | Restructuring code without changing external behavior | "extract auth middleware into its own package", "split the god-struct into services" |
+
+**Detection trigger phrases** in the user's initial prompt or interview answers:
+- MIGRATION: "convert", "migrate", "port", "replace existing X with", "rewrite Z into Y format", "move from A to B"
+- BUG_FIX: "fix", "broken", "doesn't work", "race", "regression", "leak", audit finding references (C-N, H-N, M-N)
+- REFACTOR: "extract", "split", "consolidate", "restructure", "reorganize", "clean up"
+- GREENFIELD: default if none of the above apply
+
+Ask an explicit classification question using AskUserQuestion if the type isn't obvious from the initial prompt.
+
+## MIGRATION MODE ENFORCEMENT (R2) — IF spec_type is MIGRATION
+
+If you classified the feature as MIGRATION, you have additional mandatory duties in R2:
+
+1. **Enumerate the source inventory.** The user MUST provide (or you MUST generate via grep and ask the user to confirm) a complete list of every source artifact that must be ported. For a test migration: every Test* function in every legacy test file. For a library port: every public symbol. For a protocol migration: every endpoint.
+
+2. **Use grep to generate the candidate inventory.** Example:
+   ```bash
+   grep -rn "^func Test" legacy/tests/ > /tmp/source-inventory.txt
+   ```
+   Then present the list to the user via AskUserQuestion and ask them to confirm/prune.
+
+3. **Write the inventory to state.md.** Format:
+   ```
+   ## source_inventory
+   - legacy/tests/auth_test.go:TestLogin
+   - legacy/tests/auth_test.go:TestLogout
+   - legacy/tests/cache_test.go:TestInvalidate
+   ...
+   ```
+
+4. **Declare the destination naming rule.** How does source map to destination? Suffix `_v2`? New directory? New file with renamed symbols? The rule must be deterministic so the coverage-diff stream in F2 INSPECT can check it mechanically. Ask the user explicitly.
+
+5. **NEVER accept wiggle-word language as a complete spec.** If the user says "equivalent coverage," "same semantics," "similar to legacy" without an enumerated source list, the spec is NOT finalizable. Refuse to proceed to R3 SPEC until the enumeration is done. This is the hard fix for the D4 failure mode.
+
+6. **In R3 SPEC output**, include the full `source_inventory` and `destination_naming_rule` as top-level fields in both the markdown spec and the JSON spec. Foundry's decompose will read these to populate each casting's `coverage_list`.
 
 ## SURVEY RULES (R0)
 - Spawn ALL 4 agents in a SINGLE message (parallel execution)

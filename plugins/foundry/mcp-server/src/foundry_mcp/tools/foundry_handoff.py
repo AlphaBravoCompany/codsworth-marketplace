@@ -1,0 +1,343 @@
+"""Foundry handoff audit log (v3.2.0).
+
+Every handoff event in a Foundry run must be recorded through
+`Foundry-Handoff`. This creates an inspectable trail showing which
+artifacts were produced from which sources, with integrity hashes,
+and whether the lead re-read the source before the handoff happened.
+
+Handoff events:
+  - spec_to_casting:     spec.md → castings/manifest.json + casting-N-prompt.md
+  - casting_to_teammate: casting-N-prompt.md → Agent spawn
+  - teammate_to_accepted: teammate completion report → lead acceptance
+  - inspect_to_grind:    defects → grind tasks
+  - grind_to_inspect:    grind fixes → re-verification
+  - assay_to_done:       ASSAY verdicts → F6 DONE
+  - spec_to_decompose:   (re-read) lead re-reads spec before decomposing
+  - any other transition the lead wants audited
+
+The log is JSONL at `foundry-archive/{run}/handoffs.jsonl` (machine
+readable) and mirrored to `handoffs.md` (human readable).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from foundry_mcp.tools.foundry_state import get_run_dir
+
+
+def _hash_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    h = hashlib.sha256(path.read_bytes()).hexdigest()
+    return f"sha256:{h[:16]}"
+
+
+def _hash_str(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def foundry_handoff(
+    event: str,
+    source: str = "",
+    destination: str = "",
+    source_reread: bool = False,
+    summary: str = "",
+    information_loss: str = "",
+    project_root: str = ".",
+) -> dict:
+    """Record a handoff event.
+
+    Args:
+        event: One of spec_to_casting, casting_to_teammate, teammate_to_accepted,
+            inspect_to_grind, grind_to_inspect, assay_to_done, spec_reread,
+            or a custom short name.
+        source: Path to the source artifact (relative to project root). If the
+            path exists, its hash is recorded automatically.
+        destination: Path to the destination artifact.
+        source_reread: The lead MUST set this to True if the handoff involves
+            re-reading the source (e.g. spec → casting, spec → teammate prompt,
+            spec → acceptance). False means "the lead acted from prior memory,"
+            which is logged but flagged.
+        summary: One-line description of what this handoff accomplished.
+        information_loss: If the destination artifact contains less of the
+            spec than the source, describe what was dropped. Non-empty value
+            is a warning flag (prompts the lead to justify).
+
+    Returns:
+        {
+            "ok": True,
+            "event": ...,
+            "handoff_id": "uuid",
+            "source_hash": ...,
+            "destination_hash": ...,
+            "source_reread": bool,
+            "warning": str | None
+        }
+    """
+    fdir = get_run_dir(project_root)
+    if not fdir:
+        return {"ok": False, "error": "No active foundry run"}
+    if not fdir.exists():
+        fdir.mkdir(parents=True, exist_ok=True)
+
+    root = Path(project_root).resolve()
+    source_path = (root / source) if source and not Path(source).is_absolute() else Path(source) if source else None
+    dest_path = (root / destination) if destination and not Path(destination).is_absolute() else Path(destination) if destination else None
+
+    source_hash = _hash_file(source_path) if source_path else None
+    dest_hash = _hash_file(dest_path) if dest_path else None
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    handoff_id = _hash_str(f"{timestamp}|{event}|{source}|{destination}")
+
+    entry = {
+        "handoff_id": handoff_id,
+        "timestamp": timestamp,
+        "event": event,
+        "source": source,
+        "source_hash": source_hash,
+        "destination": destination,
+        "destination_hash": dest_hash,
+        "source_reread": bool(source_reread),
+        "summary": summary,
+        "information_loss": information_loss,
+    }
+
+    warning = None
+    if information_loss:
+        warning = f"Information loss reported: {information_loss}. Lead must justify or re-decompose."
+    if not source_reread and event in {"spec_to_casting", "spec_reread", "spec_to_decompose", "acceptance"}:
+        warning = (warning + "; " if warning else "") + (
+            f"source_reread=False for event '{event}'. Lead acted from memory, "
+            f"not a fresh read of the source. Context rot risk."
+        )
+
+    # Write JSONL
+    jsonl_path = fdir / "handoffs.jsonl"
+    with jsonl_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+    # Mirror to human-readable markdown
+    md_path = fdir / "handoffs.md"
+    header_needed = not md_path.exists()
+    with md_path.open("a", encoding="utf-8") as f:
+        if header_needed:
+            f.write("# Foundry Handoff Audit Log\n\n")
+            f.write("Every transition between phases or artifacts is recorded here.\n\n")
+        f.write(f"## {event} — {timestamp}\n")
+        f.write(f"- handoff_id: `{handoff_id}`\n")
+        if source:
+            f.write(f"- source: `{source}` ({source_hash or 'no file'})\n")
+        if destination:
+            f.write(f"- destination: `{destination}` ({dest_hash or 'no file'})\n")
+        f.write(f"- source_reread: `{source_reread}`\n")
+        if summary:
+            f.write(f"- summary: {summary}\n")
+        if information_loss:
+            f.write(f"- **information_loss**: {information_loss}\n")
+        if warning:
+            f.write(f"- **WARNING**: {warning}\n")
+        f.write("\n")
+
+    return {
+        "ok": True,
+        "handoff_id": handoff_id,
+        "event": event,
+        "source_hash": source_hash,
+        "destination_hash": dest_hash,
+        "source_reread": source_reread,
+        "warning": warning,
+        "log_entry": entry,
+    }
+
+
+def foundry_spec_hash(project_root: str = ".") -> dict:
+    """Return the current sha256 of spec.md. Lead calls this to obtain a
+    hash that must be passed to `Foundry-Spawn-Teammate` and
+    `Foundry-Accept-Casting`. The tools verify the hash matches the
+    current file content, forcing the lead to actually Read the spec
+    rather than relying on prior context.
+    """
+    fdir = get_run_dir(project_root)
+    if not fdir:
+        return {"ok": False, "error": "No active foundry run"}
+
+    spec_path = fdir / "spec.md"
+    if not spec_path.exists():
+        state_path = fdir / "state.json"
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            sp = state.get("spec_path", "")
+            if sp:
+                candidate = Path(project_root) / sp
+                if candidate.exists():
+                    spec_path = candidate
+
+    if not spec_path.exists():
+        return {"ok": False, "error": "spec.md not found in run directory or state"}
+
+    h = _hash_file(spec_path)
+    size = spec_path.stat().st_size
+    mtime = datetime.fromtimestamp(spec_path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+    return {
+        "ok": True,
+        "spec_path": str(spec_path),
+        "spec_hash": h,
+        "size_bytes": size,
+        "mtime": mtime,
+        "instruction": (
+            "Read the spec.md file now. Then pass the spec_hash to every "
+            "Foundry-Spawn-Teammate and Foundry-Accept-Casting call. If you "
+            "do not re-Read the spec first, you are acting from memory — "
+            "this violates the v3.2.0 context-rot prevention rule."
+        ),
+    }
+
+
+def foundry_accept_casting(
+    casting_id: int | str,
+    spec_hash: str,
+    prompt_hash: str,
+    completion_report: str,
+    project_root: str = ".",
+) -> dict:
+    """Gate the acceptance of a completed casting.
+
+    The lead MUST call this before marking any casting done. The tool:
+      1. Verifies spec_hash matches the current spec.md (forces re-read)
+      2. Verifies prompt_hash matches the casting's prompt file (forces
+         the lead to have read the authoritative prompt, not a memory)
+      3. Records the acceptance as a handoff entry
+      4. Returns the list of acceptance criteria from the casting's
+         <spec_requirements> block so the lead can verify each against
+         the completion report
+
+    It does NOT mechanically check that the completion report satisfies
+    the ACs — that requires semantic understanding. It provides the
+    authoritative AC list and forces the lead to acknowledge it.
+
+    Args:
+        casting_id: Casting id from manifest.json
+        spec_hash: Fresh sha256 of spec.md (from Foundry-Spec-Hash)
+        prompt_hash: Hash of casting-{id}-prompt.md (from Foundry-Spawn-Teammate)
+        completion_report: The teammate's completion report text
+        project_root: Repo root
+
+    Returns:
+        On success:
+            {"ok": True, "casting_id": N, "acceptance_criteria": [...],
+             "must_verify": [...], "warning": str | None}
+        On failure:
+            {"ok": False, "error": "...", "hint": "..."}
+    """
+    fdir = get_run_dir(project_root)
+    if not fdir:
+        return {"ok": False, "error": "No active foundry run"}
+
+    # Verify spec hash
+    spec_result = foundry_spec_hash(project_root=project_root)
+    if not spec_result.get("ok"):
+        return {"ok": False, "error": f"Cannot hash spec: {spec_result.get('error')}"}
+    current_spec_hash = spec_result["spec_hash"]
+    if spec_hash != current_spec_hash:
+        return {
+            "ok": False,
+            "error": "stale_spec_hash",
+            "hint": (
+                f"Spec hash mismatch. You passed {spec_hash!r} but current is "
+                f"{current_spec_hash!r}. Re-read spec.md and try again with the "
+                f"fresh hash. Never accept a casting using a spec hash from "
+                f"memory — the spec may have been updated mid-run."
+            ),
+        }
+
+    # Load the casting prompt
+    prompt_path = fdir / "castings" / f"casting-{casting_id}-prompt.md"
+    if not prompt_path.exists():
+        return {
+            "ok": False,
+            "error": f"casting-{casting_id}-prompt.md not found",
+            "hint": "Re-run F0.5 DECOMPOSE",
+        }
+
+    prompt_text = prompt_path.read_text(encoding="utf-8")
+    current_prompt_hash = _hash_str(prompt_text)
+    if prompt_hash != current_prompt_hash:
+        return {
+            "ok": False,
+            "error": "stale_prompt_hash",
+            "hint": (
+                f"Casting prompt hash mismatch. Call Foundry-Spawn-Teammate "
+                f"first to get a fresh prompt hash, then retry acceptance."
+            ),
+        }
+
+    # Extract acceptance criteria from the <spec_requirements> block
+    import re
+    match = re.search(
+        r"<spec_requirements>(.*?)</spec_requirements>",
+        prompt_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return {
+            "ok": False,
+            "error": "casting prompt has no <spec_requirements> block",
+            "hint": "F0.9 VALIDATE should have caught this. Re-run validation.",
+        }
+
+    spec_block = match.group(1).strip()
+    acs = [ln.strip() for ln in spec_block.splitlines() if ln.strip()]
+
+    # Check for "out of scope" or "cut scope" mentions in the teammate report
+    warning_phrases = [
+        "out-of-scope",
+        "out of scope",
+        "intentionally skipped",
+        "deferred",
+        "partial coverage",
+        "subset of",
+        "core only",
+        "manual validation",
+        "follow-up",
+    ]
+    report_lower = completion_report.lower()
+    scope_flags = [p for p in warning_phrases if p in report_lower]
+    warning = None
+    if scope_flags:
+        warning = (
+            f"Teammate completion report contains scope-flag phrases: {scope_flags}. "
+            f"Do NOT accept this casting. Re-dispatch with explicit instruction to "
+            f"complete the missing work. Build-green is necessary but NOT sufficient."
+        )
+
+    # Record the acceptance attempt as a handoff entry.
+    # Use the raw path string to avoid macOS /tmp ↔ /private/tmp symlink
+    # mismatches during relative_to computation.
+    foundry_handoff(
+        event="acceptance",
+        source=f"castings/casting-{casting_id}-prompt.md",
+        destination=f"casting-{casting_id}-accepted",
+        source_reread=True,  # the MCP tool enforces it by requiring fresh hashes
+        summary=f"casting {casting_id} acceptance check",
+        information_loss=", ".join(scope_flags) if scope_flags else "",
+        project_root=project_root,
+    )
+
+    return {
+        "ok": warning is None,
+        "casting_id": casting_id,
+        "acceptance_criteria": acs,
+        "must_verify": [
+            f"Every AC above has a corresponding artifact/behavior in the completion report",
+            f"Build is green AND tests pass",
+            f"No scope-flag phrases in the completion report",
+            f"Research compliance check (if research_context applies): each recommendation honored",
+        ],
+        "warning": warning,
+    }
