@@ -21,7 +21,7 @@
       "name": "foundry",
       "source": "./plugins/foundry",
       "description": "Autonomous build-verify-fix loop with 5-stream verification (TRACE, PROVE, RESEARCH_AUDIT, SIGHT, TEST), defect grinding, spec-before-code assay, and research compliance. Forge plans. Foundry builds.",
-      "version": "2.0.1",
+      "version": "2.0.2",
       "category": "development",
       "author": {
         "name": "AlphaBravo"

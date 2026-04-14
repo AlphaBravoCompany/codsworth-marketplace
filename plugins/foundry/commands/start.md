@@ -36,10 +36,10 @@ Use the right model for each role. Teammates follow instructions — they don't 
 | F0 Researchers | sonnet | Domain investigation, pattern extraction |
 | F0.5 Decompose agents | opus | Spec decomposition requires reasoning |
 | F0.9 Validation | (you do it) | Part of lead orchestration |
-| F1 CAST teammates | **sonnet** | Follow casting instructions with rich prompt |
-| F2 TRACE agent | sonnet | Systematic wiring checks |
+| F1 CAST teammates | **opus** | Reasoning-heavy: research compliance check, deviation rule judgment, debugging protocol, scope boundary decisions |
+| F2 TRACE agent | sonnet | Serena LSP queries — mechanical, systematic wiring checks |
 | F2 PROVE agent | opus | Spec-before-code requires deep reasoning |
-| F3 GRIND teammates | **sonnet** | Fix defects with rich prompt guidance |
+| F3 GRIND teammates | **opus** | Debugging is hypothesis-testing; research compliance and scope boundary decisions under pressure |
 | F4 ASSAY agents | opus | Fresh-eyes verification needs reasoning |
 | F5 TEMPER | sonnet | Systematic micro-domain probing |
 | F5.5 Nyquist | sonnet | Test generation from requirements |
@@ -142,7 +142,7 @@ Follow the phases in order. Use MCP tools (`Foundry-Next`, `Foundry-Gate`, `Foun
 3. Create tasks for THIS WAVE ONLY
 4. Spawn teammates with the **rich teammate prompt**:
    - Read `${CLAUDE_PLUGIN_ROOT}/prompts/teammate.md` and include its FULL content in the agent prompt
-   - Model: **sonnet** (teammates follow instructions, don't need Opus reasoning)
+   - Model: **opus** — teammates do heavy reasoning (research compliance, deviation rules, debugging, scope boundary); Opus produces fewer defects per cycle even if per-token cost is higher
    - Max 5 per wave
    - Include casting context: must_haves, research_context, requirement classification
 5. Wait for completion → shut down teammates → `TeamDelete` → `Foundry-Team-Down`
@@ -177,8 +177,8 @@ Sync all findings: `Foundry-Sync`
 2. Create team: `TeamCreate("foundry-grind-N")`
 3. Spawn 1-3 teammates with the **rich teammate prompt** (same as CAST, includes DEBUGGING PROTOCOL section):
    - Read `${CLAUDE_PLUGIN_ROOT}/prompts/teammate.md` — it includes the GRIND-specific debugging protocol
-   - Model: **sonnet**
-   - Each defect task includes: defect description, source (trace/prove/sight/test), file location
+   - Model: **opus** — debugging is hypothesis-testing; Opus's reasoning is the difference between a one-shot fix and a GRIND loop
+   - Each defect task includes: defect description, source (trace/prove/sight/test/research_audit), file location
 4. Shut down → `TeamDelete` → `Foundry-Team-Down`
 5. Build + test → commit → review concerns.md → back to F2 INSPECT
 
