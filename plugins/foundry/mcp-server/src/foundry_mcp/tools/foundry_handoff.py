@@ -294,6 +294,36 @@ def foundry_accept_casting(
     spec_block = match.group(1).strip()
     acs = [ln.strip() for ln in spec_block.splitlines() if ln.strip()]
 
+    # v3.3.0: Requirement-ID citation check.
+    #
+    # Parse every tagged requirement ID from the casting's <spec_requirements>
+    # block. For each ID, verify the completion report contains a file:line
+    # citation within 300 chars of the ID mention. Missing citations mean
+    # the teammate did not (or cannot) prove that requirement was implemented —
+    # mechanical proof-of-coverage, prevents drift between what the spec asked
+    # for and what the teammate claims was built.
+    req_id_pattern = r"\b(?:US|FR|NFR|AC|VC|IR|TR)-\d+(?:\.\d+)?\b"
+    casting_req_ids = sorted(set(re.findall(req_id_pattern, spec_block)))
+    # A citation is a file path with a line number: `path/to/file.ext:123`
+    # or `path/to/file.ext:123-145`. Allow common source extensions.
+    citation_pattern = re.compile(
+        r"[\w./\-]+\.(?:py|ts|tsx|js|jsx|go|rs|java|rb|cpp|c|h|hpp|kt|swift|sql|yaml|yml|json|md|sh|toml|html|css|scss|vue|svelte|tf|hcl)"
+        r":\d+(?:-\d+)?",
+        re.IGNORECASE,
+    )
+    missing_citations: list = []
+    for rid in casting_req_ids:
+        # Find every occurrence of the requirement ID in the report.
+        found_citation = False
+        for m in re.finditer(re.escape(rid), completion_report):
+            start = m.start()
+            window = completion_report[start:start + 300]
+            if citation_pattern.search(window):
+                found_citation = True
+                break
+        if not found_citation:
+            missing_citations.append(rid)
+
     # Check for "out of scope" or "cut scope" mentions in the teammate report
     warning_phrases = [
         "out-of-scope",
@@ -315,6 +345,16 @@ def foundry_accept_casting(
             f"Do NOT accept this casting. Re-dispatch with explicit instruction to "
             f"complete the missing work. Build-green is necessary but NOT sufficient."
         )
+    elif missing_citations:
+        warning = (
+            f"Completion report is missing file:line citations for "
+            f"{len(missing_citations)} requirement(s): {', '.join(missing_citations)}. "
+            f"Every requirement ID in the casting's <spec_requirements> block must "
+            f"have a corresponding file:line citation in the completion report proving "
+            f"where it was implemented. Do NOT accept this casting. Re-dispatch with "
+            f"instruction: 'For each requirement ID (US-N, FR-N, etc.) cite the exact "
+            f"file:line where it was implemented.' Build-green is necessary but NOT sufficient."
+        )
 
     # Record the acceptance attempt as a handoff entry.
     # Use the raw path string to avoid macOS /tmp ↔ /private/tmp symlink
@@ -333,8 +373,11 @@ def foundry_accept_casting(
         "ok": warning is None,
         "casting_id": casting_id,
         "acceptance_criteria": acs,
+        "requirement_ids": casting_req_ids,
+        "missing_citations": missing_citations,
         "must_verify": [
             f"Every AC above has a corresponding artifact/behavior in the completion report",
+            f"Every requirement ID has a file:line citation in the completion report",
             f"Build is green AND tests pass",
             f"No scope-flag phrases in the completion report",
             f"Research compliance check (if research_context applies): each recommendation honored",

@@ -253,7 +253,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="Foundry-Validate-Castings",
-            description="Validate castings against spec across 7 dimensions before CAST, including Prompt Fidelity (v3.0.0). Returns pass/fail with revision hints.",
+            description="Validate castings against spec across 9 dimensions before CAST. Includes Prompt Fidelity (v3.0.0, extended v3.3.0 with <global_invariants> propagation), Migration Coverage (v3.1.0), and Spec Structure (v3.3.0: tagged requirement IDs + optional global_invariants section). Returns pass/fail with revision hints.",
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
@@ -308,9 +308,11 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Gate acceptance of a completed casting. Requires fresh spec_hash and prompt_hash "
                 "(verifies re-reads happened), extracts the casting's acceptance criteria from the "
-                "<spec_requirements> block, checks the completion report for scope-flag phrases. "
-                "Returns the AC list the lead must manually verify. Blocks acceptance if teammate "
-                "reported any scope cuts. (v3.2.0)"
+                "<spec_requirements> block, checks the completion report for scope-flag phrases, "
+                "and (v3.3.0) mechanically verifies every requirement ID in the casting's spec slice "
+                "has a file:line citation in the completion report. Returns the AC list, requirement "
+                "IDs, and any missing citations. Blocks acceptance if the teammate reported scope "
+                "cuts OR any requirement has no citation. (v3.2.0, extended v3.3.0)"
             ),
             inputSchema={
                 "type": "object",

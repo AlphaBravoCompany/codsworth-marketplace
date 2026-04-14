@@ -151,9 +151,42 @@ Write all six to `foundry-archive/{run_name}/codebase/`:
 - **INTEGRATIONS.md**: external services, databases, cloud APIs, IPC, env vars. Cite where each integration is wired in.
 - **CONCERNS.md**: TODO/FIXME hotspots, audit findings, migration debt, suspicious size or absence. Cite each concern.
 
+### Step 4.5: Extract mandatory rules from CLAUDE.md (v3.3.0)
+
+If the project has a `CLAUDE.md`, `AGENTS.md`, or `.cursorrules` file, extract **every** imperative rule (not just top 3). An imperative rule is a sentence that tells a code-writing agent what it MUST or MUST NOT do: "Always wrap goroutines in errgroup," "NEVER commit secrets to this repo," "Every file write must go through WriteAtomicFile," "Use structured logging via slog, not fmt.Println."
+
+Write all extracted rules verbatim (one per line, no paraphrasing) to:
+
+```
+foundry-archive/{run_name}/codebase/MANDATORY_RULES.md
+```
+
+Format:
+
+```markdown
+# Mandatory Rules
+
+**Source:** CLAUDE.md / AGENTS.md / .cursorrules
+**Extracted:** {YYYY-MM-DD}
+
+- Rule 1 verbatim from source
+- Rule 2 verbatim from source
+- Rule 3 verbatim from source
+...
+```
+
+**Rules for rule extraction:**
+- **Verbatim only.** Never paraphrase. If the source says "All file writes go through `pkg/atomicfile.WriteAtomicFile`," write exactly that.
+- **Imperatives only.** Skip explanatory text, rationale, examples, and background. Rules are the sentences that constrain behavior.
+- **No invention.** If CLAUDE.md doesn't exist or has no imperatives, write an empty MANDATORY_RULES.md with the heading and a note "No mandatory rules found."
+- **Deduplicate.** If a rule appears in CLAUDE.md and .cursorrules, include it once.
+- **No citation wrapping.** Unlike other codebase files, do NOT add `path/to/file:line` citations to each rule — these rules get embedded verbatim into every casting prompt and citation formatting adds noise.
+
+These rules will be propagated byte-identical into every casting prompt via the `<mandatory_rules>` block. F0.9 Dimension 7g verifies propagation. Drift = validation failure.
+
 ### Step 5: Return JSON summary
 
-After writing all six files, return this JSON to the lead:
+After writing all seven files (six codebase files + MANDATORY_RULES.md), return this JSON to the lead:
 
 ```json
 {
@@ -163,7 +196,8 @@ After writing all six files, return this JSON to the lead:
     "foundry-archive/{run}/codebase/STRUCTURE.md",
     "foundry-archive/{run}/codebase/CONVENTIONS.md",
     "foundry-archive/{run}/codebase/INTEGRATIONS.md",
-    "foundry-archive/{run}/codebase/CONCERNS.md"
+    "foundry-archive/{run}/codebase/CONCERNS.md",
+    "foundry-archive/{run}/codebase/MANDATORY_RULES.md"
   ],
   "project_type": "k8s operator / CLI tool / web app / library / monorepo / ...",
   "dominant_language": "Go 1.22 / TypeScript 5.4 / Python 3.12 / ...",
@@ -172,11 +206,15 @@ After writing all six files, return this JSON to the lead:
     "Second rule",
     "Third rule"
   ],
+  "mandatory_rules": "- Rule 1 verbatim\n- Rule 2 verbatim\n...",
+  "mandatory_rules_count": 0,
   "gaps_total": 0
 }
 ```
 
-The `top_conventions` are the three rules most likely to cause a build to land wrong if ignored. Pick them carefully — these are what the lead will inject into every casting prompt.
+The `top_conventions` are the three rules most likely to cause a build to land wrong if ignored. Pick them carefully — these are what the lead will inject into every casting prompt's `## Casting Metadata` section.
+
+The `mandatory_rules` field is the **full** CLAUDE.md rule list (not the top 3) formatted as a single string. Decompose will store it as `manifest.mandatory_rules` and every casting prompt will contain a `<mandatory_rules>` block with this exact content, byte-identical.
 
 ## Rules
 

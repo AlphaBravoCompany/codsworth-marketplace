@@ -20,8 +20,8 @@
     {
       "name": "foundry",
       "source": "./plugins/foundry",
-      "description": "Autonomous build-verify-fix loop with pre-authored teammate prompts (v3.0.0 router architecture), migration mode with coverage-diff stream (v3.1.0), handoff audit log + spec-hash gate + gated acceptance (v3.2.0), 6-stream verification, defect grinding, spec-before-code assay, and research compliance. Forge plans. Foundry builds.",
-      "version": "3.2.0",
+      "description": "Autonomous build-verify-fix loop with pre-authored teammate prompts (v3.0.0 router architecture), migration mode with coverage-diff stream (v3.1.0), handoff audit log + spec-hash gate + gated acceptance (v3.2.0), drift-prevention triad — global_invariants + mandatory_rules + requirement-ID citation — with stall watchdog and sharpened orchestrator imperative (v3.3.0), 6-stream verification, defect grinding, spec-before-code assay, and research compliance. Forge plans. Foundry builds.",
+      "version": "3.3.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"

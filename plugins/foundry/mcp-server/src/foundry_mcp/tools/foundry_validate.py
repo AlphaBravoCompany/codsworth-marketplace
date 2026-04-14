@@ -1,4 +1,4 @@
-"""Foundry casting validation — 6-dimension quality gate before CAST phase.
+"""Foundry casting validation — 9-dimension quality gate before CAST phase.
 
 Validates that castings will deliver the spec before any building starts.
 A 5-minute validation saves hours of GRIND cycles.
@@ -16,7 +16,7 @@ from foundry_mcp.tools.foundry_state import get_run_dir
 def foundry_validate_castings(
     project_root: str = ".",
 ) -> dict:
-    """Validate castings against the spec across 6 dimensions.
+    """Validate castings against the spec across 9 dimensions.
 
     Returns:
         {
@@ -28,6 +28,9 @@ def foundry_validate_castings(
                 "key_links_planned": {"ok": bool, "issues": [...]},
                 "scope_sanity": {"ok": bool, "issues": [...]},
                 "research_integration": {"ok": bool, "issues": [...]},
+                "prompt_fidelity": {"ok": bool, "issues": [...]},
+                "migration_coverage": {"ok": bool, "issues": [...]},
+                "spec_structure": {"ok": bool, "issues": [...]},
             },
             "issues": [...],
             "revision_hints": [...],
@@ -212,7 +215,7 @@ def foundry_validate_castings(
     dim6_ok = len(dim6_issues) == 0
     dimensions["research_integration"] = {"ok": dim6_ok, "issues": dim6_issues}
 
-    # ── Dimension 7: Prompt Fidelity (v3.0.0) ──
+    # ── Dimension 7: Prompt Fidelity (v3.0.0, extended v3.3.0) ──
     #
     # Every casting must have a pre-authored teammate prompt file at
     # `castings/casting-{id}-prompt.md`. The prompt MUST contain the spec
@@ -220,9 +223,26 @@ def foundry_validate_castings(
     # spec.md — no paraphrasing allowed. This enforces the v3.0.0
     # architecture principle: plans are prompts, authored once from the
     # spec, and handed directly to teammates without lead re-translation.
+    #
+    # v3.3.0 adds sub-check 7e: every prompt must also contain a
+    # <global_invariants> block whose content is byte-identical across all
+    # castings AND matches manifest.global_invariants verbatim AND is a
+    # verbatim substring of spec.md. This propagates cross-cutting rules
+    # (auth, validation, naming, security) to every teammate without
+    # relying on decompose's judgment about which casting "needs" which
+    # rule — drift prevention for rules that apply globally.
     dim7_issues = []
     castings_dir = fdir / "castings"
     normalized_spec = _normalize(spec_text)
+    manifest_invariants = manifest.get("global_invariants", "") or ""
+    normalized_manifest_invariants = _normalize(manifest_invariants)
+    manifest_rules = manifest.get("mandatory_rules", "") or ""
+    normalized_manifest_rules = _normalize(manifest_rules)
+    # Track per-casting invariant hashes so we can verify byte-identical
+    # propagation across every casting prompt.
+    import hashlib as _hashlib
+    invariant_hashes: dict = {}  # casting_id -> sha256 of normalized block
+    rules_hashes: dict = {}  # casting_id -> sha256 of normalized mandatory_rules block
 
     for c in castings:
         cid = c.get("id", "?")
@@ -315,6 +335,133 @@ def foundry_validate_castings(
                 f"({', '.join(repr(p) for p in forbidden_found[:3])}). These phrases silently "
                 f"authorize scope cuts and are banned from teammate prompts."
             )
+
+        # 7e: global_invariants block propagation (v3.3.0).
+        # Required unconditionally: every prompt must contain the block so
+        # F0.9 can verify uniform propagation. If manifest_invariants is
+        # empty, an empty block is still required (the block's presence is
+        # what enables mechanical verification across castings).
+        invariant_block = _extract_invariants_block(prompt_text)
+        if invariant_block is None:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "missing_global_invariants_block",
+                "detail": (
+                    f"casting-{cid}-prompt.md has no <global_invariants>...</global_invariants> "
+                    f"section. Every casting prompt must contain this block so cross-cutting "
+                    f"rules propagate uniformly to every teammate."
+                ),
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': add a <global_invariants> block containing "
+                f"manifest.global_invariants verbatim. If manifest.global_invariants is empty, "
+                f"the block should still exist but be empty."
+            )
+        else:
+            normalized_block = _normalize(invariant_block)
+            # Hash the normalized block so we can detect drift across castings.
+            h = _hashlib.sha256(normalized_block.encode("utf-8")).hexdigest()[:16]
+            invariant_hashes[cid] = h
+
+            # 7e.1: block content must match manifest.global_invariants.
+            # Dim 9 separately verifies manifest↔spec fidelity, so chaining
+            # 7e.1 with Dim 9 gives us transitive spec↔casting fidelity.
+            if normalized_block != normalized_manifest_invariants:
+                dim7_issues.append({
+                    "casting": cid,
+                    "title": title,
+                    "issue": "global_invariants_drift_from_manifest",
+                    "detail": (
+                        f"casting-{cid}-prompt.md's <global_invariants> block does not match "
+                        f"manifest.global_invariants verbatim (after normalization). Decompose "
+                        f"must paste the manifest's invariants character-for-character."
+                    ),
+                })
+                revision_hints.append(
+                    f"Casting #{cid} '{title}': re-copy manifest.global_invariants into the "
+                    f"<global_invariants> block. Never paraphrase or summarize cross-cutting rules."
+                )
+
+        # 7g: mandatory_rules block propagation (v3.3.0).
+        # Every prompt must contain a <mandatory_rules> block — the CLAUDE.md /
+        # AGENTS.md / .cursorrules imperatives propagated identically to every
+        # casting. Same mechanics as 7e: byte-identical across castings, verbatim
+        # from manifest.mandatory_rules. Presence required regardless of whether
+        # the project has a CLAUDE.md (empty block is valid; absent block is not).
+        rules_block = _extract_mandatory_rules_block(prompt_text)
+        if rules_block is None:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "missing_mandatory_rules_block",
+                "detail": (
+                    f"casting-{cid}-prompt.md has no <mandatory_rules>...</mandatory_rules> "
+                    f"section. Every casting prompt must contain this block so CLAUDE.md "
+                    f"imperatives propagate uniformly to every teammate."
+                ),
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': add a <mandatory_rules> block containing "
+                f"manifest.mandatory_rules verbatim. If the project has no CLAUDE.md, "
+                f"the block should still exist but be empty."
+            )
+        else:
+            normalized_rules_block = _normalize(rules_block)
+            rules_h = _hashlib.sha256(normalized_rules_block.encode("utf-8")).hexdigest()[:16]
+            rules_hashes[cid] = rules_h
+            if normalized_rules_block != normalized_manifest_rules:
+                dim7_issues.append({
+                    "casting": cid,
+                    "title": title,
+                    "issue": "mandatory_rules_drift_from_manifest",
+                    "detail": (
+                        f"casting-{cid}-prompt.md's <mandatory_rules> block does not match "
+                        f"manifest.mandatory_rules verbatim (after normalization). Decompose "
+                        f"must paste the manifest's rules character-for-character."
+                    ),
+                })
+                revision_hints.append(
+                    f"Casting #{cid} '{title}': re-copy manifest.mandatory_rules into the "
+                    f"<mandatory_rules> block. Never paraphrase or filter CLAUDE.md rules."
+                )
+
+    # 7e.3: block content must be byte-identical across EVERY casting.
+    # Run this check after the per-casting loop so we have all hashes.
+    if len(set(invariant_hashes.values())) > 1:
+        hash_to_castings: dict = {}
+        for cid, h in invariant_hashes.items():
+            hash_to_castings.setdefault(h, []).append(cid)
+        dim7_issues.append({
+            "issue": "global_invariants_inconsistent_across_castings",
+            "detail": (
+                f"Different castings have different <global_invariants> blocks. "
+                f"Every casting must contain byte-identical invariants."
+            ),
+            "groups": {h: cids for h, cids in hash_to_castings.items()},
+        })
+        revision_hints.append(
+            "Different castings have different <global_invariants> content. Re-run decompose "
+            "and propagate manifest.global_invariants byte-identical to every casting prompt."
+        )
+
+    # 7g.3: mandatory_rules must be byte-identical across every casting too.
+    if len(set(rules_hashes.values())) > 1:
+        hash_to_castings_r: dict = {}
+        for cid, h in rules_hashes.items():
+            hash_to_castings_r.setdefault(h, []).append(cid)
+        dim7_issues.append({
+            "issue": "mandatory_rules_inconsistent_across_castings",
+            "detail": (
+                f"Different castings have different <mandatory_rules> blocks. "
+                f"Every casting must contain byte-identical CLAUDE.md rules."
+            ),
+            "groups": {h: cids for h, cids in hash_to_castings_r.items()},
+        })
+        revision_hints.append(
+            "Different castings have different <mandatory_rules> content. Re-run decompose "
+            "and propagate manifest.mandatory_rules byte-identical to every casting prompt."
+        )
 
     dim7_ok = len(dim7_issues) == 0
     if not dim7_ok:
@@ -419,6 +566,125 @@ def foundry_validate_castings(
         "issues": dim8_issues,
         "spec_type": spec_type,
         "active": spec_type == "MIGRATION",
+    }
+
+    # ── Dimension 9: Spec Structure (v3.3.0) ──
+    #
+    # Validates the master spec.md has the minimum structure foundry needs
+    # to prevent drift:
+    #   9a (error): spec contains at least one tagged requirement ID
+    #       (US-N, FR-N, NFR-N, AC-N, VC-N, IR-N, TR-N). Without IDs,
+    #       Dimension 1 coverage tracking is impossible and Phase 3
+    #       citation checks cannot be enforced.
+    #   9b (warning): spec has a `## Global Invariants` section (or
+    #       <global_invariants> block). Missing → decompose has nothing
+    #       to propagate, so cross-cutting rules must be embedded per
+    #       casting which reintroduces tunnel-vision drift. Warning-only
+    #       to allow gradual adoption on existing specs.
+    #
+    # 9a also confirms that manifest.global_invariants, if present, was
+    # populated from the spec's section — catches decompose inventing
+    # invariants. (The per-casting verbatim check in 7e already handles
+    # this, but we surface it here too for clearer diagnostics.)
+    dim9_issues = []
+
+    if not spec_text:
+        dim9_issues.append({
+            "severity": "error",
+            "issue": "spec_unreadable",
+            "detail": "spec.md could not be read — cannot validate spec structure",
+        })
+    else:
+        # 9a: requirement IDs
+        if not spec_req_ids:
+            dim9_issues.append({
+                "severity": "error",
+                "issue": "no_tagged_requirements",
+                "detail": (
+                    "spec.md contains no tagged requirement IDs. Foundry requires "
+                    "every requirement to be tagged with an ID like US-1, FR-2, "
+                    "NFR-3, AC-4, VC-5, IR-6, or TR-7 so coverage and citations "
+                    "can be tracked mechanically. Add IDs to every requirement, "
+                    "or re-generate the spec via Forge/Lisa."
+                ),
+            })
+            revision_hints.append(
+                "Add tagged requirement IDs to spec.md (US-N, FR-N, NFR-N, AC-N, etc.). "
+                "Without IDs, Foundry cannot track coverage or enforce citations."
+            )
+
+        # 9b: global invariants section (warning-only for backward compat)
+        spec_invariants = _extract_spec_invariants_section(spec_text)
+        if not spec_invariants:
+            dim9_issues.append({
+                "severity": "warning",
+                "issue": "no_global_invariants_section",
+                "detail": (
+                    "spec.md has no '## Global Invariants' section. Cross-cutting "
+                    "rules (auth, validation, naming, error handling, security) "
+                    "must be propagated to every casting to prevent tunnel-vision "
+                    "drift. Add a '## Global Invariants' section listing rules "
+                    "that apply to every casting regardless of its slice."
+                ),
+            })
+            revision_hints.append(
+                "Add a `## Global Invariants` section to spec.md listing cross-cutting "
+                "rules that apply to every casting (auth, validation, naming, error "
+                "handling). These will be propagated verbatim to every teammate prompt."
+            )
+        else:
+            # If the spec HAS invariants, manifest.global_invariants must
+            # match them verbatim. Surface the check here too for clearer
+            # diagnostics than Dimension 7's per-casting drift messages.
+            if not manifest_invariants:
+                dim9_issues.append({
+                    "severity": "error",
+                    "issue": "manifest_invariants_missing",
+                    "detail": (
+                        "spec.md declares a '## Global Invariants' section but "
+                        "manifest.global_invariants is empty. Decompose must copy "
+                        "the section verbatim into the manifest."
+                    ),
+                })
+                revision_hints.append(
+                    "Copy spec.md's `## Global Invariants` section verbatim into "
+                    "manifest.global_invariants (top-level field)."
+                )
+            elif _normalize(spec_invariants) != normalized_manifest_invariants:
+                dim9_issues.append({
+                    "severity": "error",
+                    "issue": "manifest_invariants_drift",
+                    "detail": (
+                        "manifest.global_invariants does not match spec.md's "
+                        "'## Global Invariants' section verbatim (after normalization). "
+                        "Decompose must paste it character-for-character."
+                    ),
+                })
+                revision_hints.append(
+                    "Re-copy spec.md's `## Global Invariants` section into "
+                    "manifest.global_invariants. Never paraphrase cross-cutting rules."
+                )
+
+    dim9_errors = [i for i in dim9_issues if i.get("severity") == "error"]
+    dim9_warnings = [i for i in dim9_issues if i.get("severity") == "warning"]
+    dim9_ok = len(dim9_errors) == 0
+    if dim9_errors:
+        issues.append({
+            "dimension": "spec_structure",
+            "severity": "error",
+            "message": f"{len(dim9_errors)} spec structure error(s) detected",
+        })
+    if dim9_warnings:
+        issues.append({
+            "dimension": "spec_structure",
+            "severity": "warning",
+            "message": f"{len(dim9_warnings)} spec structure warning(s): add `## Global Invariants` section to prevent cross-cutting drift",
+        })
+    dimensions["spec_structure"] = {
+        "ok": dim9_ok,
+        "issues": dim9_issues,
+        "errors": len(dim9_errors),
+        "warnings": len(dim9_warnings),
     }
 
     # ── Overall result ──
@@ -531,6 +797,61 @@ def _extract_spec_block(prompt_text: str) -> str | None:
     if not match:
         return None
     return _normalize(match.group(1))
+
+
+def _extract_invariants_block(prompt_text: str) -> str | None:
+    """Extract content between <global_invariants>...</global_invariants>.
+    Returns raw content (not normalized — caller decides), or None if the
+    block is missing. An empty block returns the empty string, not None.
+    """
+    match = re.search(
+        r"<global_invariants>(.*?)</global_invariants>",
+        prompt_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _extract_mandatory_rules_block(prompt_text: str) -> str | None:
+    """Extract content between <mandatory_rules>...</mandatory_rules>.
+    Returns raw content (not normalized — caller decides), or None if the
+    block is missing. An empty block returns the empty string, not None.
+    """
+    match = re.search(
+        r"<mandatory_rules>(.*?)</mandatory_rules>",
+        prompt_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _extract_spec_invariants_section(spec_text: str) -> str:
+    """Extract the `## Global Invariants` section from spec.md, if present.
+    Returns the section body (everything until the next `## ` heading or
+    end-of-file), stripped. Returns empty string if no such section exists.
+    """
+    if not spec_text:
+        return ""
+    match = re.search(
+        r"^\s*##\s+Global\s+Invariants\s*\n(.*?)(?=^\s*##\s+|\Z)",
+        spec_text,
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        # Fallback: <global_invariants> block inline in the spec
+        block = re.search(
+            r"<global_invariants>(.*?)</global_invariants>",
+            spec_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if block:
+            return block.group(1).strip()
+        return ""
+    return match.group(1).strip()
 
 
 def _find_drift(spec_block: str, normalized_spec: str) -> list[str]:

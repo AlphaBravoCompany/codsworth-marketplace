@@ -1069,7 +1069,47 @@ def foundry_next_action(
     """Determine what the lead should do next based on current foundry state."""
     result = _compute_next_action(project_root)
 
+    # v3.3.0: Stall watchdog + sharpened imperative.
+    #
+    # Read the previous `.next-action-called` timestamp BEFORE overwriting it,
+    # compute the delta, and if the gap is large surface a visible STALL
+    # WARNING at the very top of the instructions. This converts silent
+    # extended-thinking runaway into an explicit, logged event the lead must
+    # acknowledge on its next turn. No hooks — state tracking via the
+    # existing MCP tool.
+    stall_warning = None
+    fdir_stall = get_run_dir(project_root)
+    if fdir_stall and fdir_stall.exists():
+        marker = fdir_stall / ".next-action-called"
+        if marker.exists():
+            try:
+                prev_iso = marker.read_text(encoding="utf-8").strip()
+                prev = datetime.fromisoformat(prev_iso)
+                delta = (datetime.now(timezone.utc) - prev).total_seconds()
+                if delta >= 180:  # 3 minutes
+                    minutes = int(delta // 60)
+                    seconds = int(delta % 60)
+                    stall_warning = (
+                        f"\u26a0\ufe0f STALL DETECTED: {minutes}m {seconds}s since your last Foundry-Next call. "
+                        f"You were silently deliberating. Stop deliberating. Execute the imperative below "
+                        f"literally. Do NOT re-read start.md, do NOT run a compliance checklist, do NOT "
+                        f"think through edge cases — just run the next tool call. If the imperative is "
+                        f"ambiguous, pick any reasonable interpretation and proceed."
+                    )
+                    result["stall_detected_seconds"] = int(delta)
+            except (ValueError, OSError):
+                pass
+
+    # v3.3.0: Sharpened imperative — lead-line structure.
+    # Extract the first actionable call from the computed instructions and
+    # emit it as a "YOUR NEXT CALL" header. Context stays in the body for
+    # when the lead needs it, but the first line is a single command.
+    action = result.get("action", "")
+    original_instructions = result.get("instructions", "")
+    imperative_header = _format_imperative_header(action, original_instructions, result.get("details", {}))
+
     directives = _read_directives(project_root)
+    directive_block = ""
     if directives["has_directives"]:
         result["directives"] = {
             "urgent": directives["urgent"],
@@ -1077,26 +1117,33 @@ def foundry_next_action(
         }
         if directives["urgent"]:
             urgent_text = " | ".join(directives["urgent"])
-            result["instructions"] = (
-                f"HUMAN DIRECTIVE (urgent): {urgent_text}\n\n"
-                f"Incorporate the above into your current action. Then:\n\n"
-                + result["instructions"]
-            )
+            directive_block = f"\n\nHUMAN DIRECTIVE (urgent): {urgent_text}\n\nIncorporate the above into your current action."
         elif directives["normal"]:
             normal_text = " | ".join(directives["normal"])
-            result["instructions"] = (
-                result["instructions"]
-                + f"\n\nHUMAN DIRECTIVE: {normal_text} \u2014 incorporate into your approach."
-            )
+            directive_block = f"\n\nHUMAN DIRECTIVE: {normal_text} \u2014 incorporate into your approach."
 
-    result["instructions"] += (
+    critical_rules = (
         "\n\nCRITICAL RULES:"
         "\n- NEVER ask 'Want me to proceed?' or 'Should I continue?' \u2014 just do it."
         "\n- NEVER stop between phases. Call Foundry-Next after each step and follow it."
+        "\n- NEVER deliberate for more than 30 seconds between tool calls. If you catch yourself thinking, call Foundry-Next and execute whatever it says."
         "\n- NEVER skip SIGHT because 'no URL.' If frontend files exist, you need a URL. Gate will block."
         "\n- If the user typed a message, treat it as a directive. Absorb and keep going."
         "\n- Zero approval gates. The foundry runs until F6 DONE or an error stops it."
     )
+
+    # Assemble instructions: stall warning (if any) → imperative → context → directives → rules
+    parts = []
+    if stall_warning:
+        parts.append(stall_warning)
+    parts.append(imperative_header)
+    parts.append("")
+    parts.append("CONTEXT:")
+    parts.append(original_instructions)
+    if directive_block:
+        parts.append(directive_block)
+    parts.append(critical_rules)
+    result["instructions"] = "\n".join(parts)
 
     # Context budget tracking
     fdir_cb = get_run_dir(project_root)
@@ -1125,6 +1172,35 @@ def foundry_next_action(
         (fdir / ".next-action-called").write_text(f"{_now()}\n", encoding="utf-8")
 
     return result
+
+
+# v3.3.0: Action → imperative-header map. Each action returned by
+# _compute_next_action maps to a single-line "YOUR NEXT CALL" directive
+# that the lead can execute without re-reading paragraph instructions.
+_ACTION_IMPERATIVES = {
+    "init": "YOUR NEXT CALL: Foundry-Init (start a new run)",
+    "cleanup_teams": "YOUR NEXT CALL: TeamDelete + Foundry-Team-Down for every active team, in order",
+    "add_castings": "YOUR NEXT CALL: TeamCreate('foundry-decompose') \u2192 Foundry-Team-Up \u2192 spawn decompose agents",
+    "transition_to_cast": "YOUR NEXT CALL: Foundry-Gate(phase='cast')",
+    "build_castings": "YOUR NEXT ACTION: WAIT for current CAST teammates. When all report complete, call TeamDelete + Foundry-Team-Down + Foundry-Phase(phase='cast')",
+    "transition_to_inspect": "YOUR NEXT CALL: Foundry-Gate(phase='inspect')",
+    "run_streams": "YOUR NEXT CALL: spawn the missing INSPECT stream agents (see details.missing_streams). SIGHT runs in main thread.",
+    "transition_to_grind": "YOUR NEXT CALL: Foundry-Tasks",
+    "fix_defects": "YOUR NEXT ACTION: WAIT for GRIND teammates. When all defects fixed, call TeamDelete + Foundry-Team-Down + Foundry-Phase(phase='grind_done')",
+    "transition_to_assay": "YOUR NEXT CALL: Foundry-Phase(phase='inspect_clean')",
+    "run_assay": "YOUR NEXT CALL: spawn 4 parallel assayer agents (model=opus, subagent_type=Explore)",
+    "transition_to_done": "YOUR NEXT CALL: Foundry-Phase(phase='done')",
+}
+
+
+def _format_imperative_header(action: str, instructions: str, details: dict) -> str:
+    """Produce the one-line 'YOUR NEXT CALL' header for the given action.
+    Falls back to a generic header if the action is unmapped."""
+    imperative = _ACTION_IMPERATIVES.get(action)
+    if imperative:
+        return imperative
+    # Unknown action — surface it but still give a forcing line
+    return f"YOUR NEXT CALL: follow the CONTEXT below (action='{action}'). Execute the first tool call mentioned. Do not deliberate."
 
 
 def _format_status_display(project_root: str) -> str:
