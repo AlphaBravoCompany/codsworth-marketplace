@@ -211,6 +211,119 @@ def foundry_validate_castings(
     dim6_ok = len(dim6_issues) == 0
     dimensions["research_integration"] = {"ok": dim6_ok, "issues": dim6_issues}
 
+    # ── Dimension 7: Prompt Fidelity (v3.0.0) ──
+    #
+    # Every casting must have a pre-authored teammate prompt file at
+    # `castings/casting-{id}-prompt.md`. The prompt MUST contain the spec
+    # requirements for this casting as a literal substring of the master
+    # spec.md — no paraphrasing allowed. This enforces the v3.0.0
+    # architecture principle: plans are prompts, authored once from the
+    # spec, and handed directly to teammates without lead re-translation.
+    dim7_issues = []
+    castings_dir = fdir / "castings"
+    normalized_spec = _normalize(spec_text)
+
+    for c in castings:
+        cid = c.get("id", "?")
+        title = c.get("title", "Untitled")
+        prompt_path = castings_dir / f"casting-{cid}-prompt.md"
+
+        # 7a: the prompt file must exist
+        if not prompt_path.exists():
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "missing_prompt_file",
+                "detail": f"casting-{cid}-prompt.md does not exist",
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': decompose must write castings/casting-{cid}-prompt.md. "
+                f"Re-run F0.5 DECOMPOSE."
+            )
+            continue
+
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+
+        if not prompt_text.strip():
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "empty_prompt_file",
+                "detail": f"casting-{cid}-prompt.md is empty",
+            })
+            continue
+
+        # 7b: the prompt must contain a <spec_requirements> block
+        spec_block = _extract_spec_block(prompt_text)
+        if spec_block is None:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "missing_spec_block",
+                "detail": (
+                    f"casting-{cid}-prompt.md has no <spec_requirements>...</spec_requirements> "
+                    f"section. The spec requirements must be included verbatim in that block."
+                ),
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': add a <spec_requirements> block containing "
+                f"the verbatim spec text for this casting's ACs."
+            )
+            continue
+
+        # 7c: every non-trivial line in the spec block must appear verbatim in spec.md
+        if not normalized_spec:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "spec_unreadable",
+                "detail": "spec.md could not be read; cannot verify substring integrity",
+            })
+            continue
+
+        drift_lines = _find_drift(spec_block, normalized_spec)
+        if drift_lines:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "spec_drift_detected",
+                "detail": (
+                    f"{len(drift_lines)} line(s) in the prompt's <spec_requirements> block do not "
+                    f"appear verbatim in spec.md"
+                ),
+                "examples": drift_lines[:3],
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': the <spec_requirements> block must be a literal copy-paste "
+                f"from spec.md. Paraphrasing and summarizing are forbidden. Re-run F0.5 DECOMPOSE and "
+                f"copy spec text character-for-character."
+            )
+
+        # 7d: forbidden scope-cutting phrases
+        forbidden_found = _find_forbidden_phrases(prompt_text)
+        if forbidden_found:
+            dim7_issues.append({
+                "casting": cid,
+                "title": title,
+                "issue": "forbidden_scope_phrase",
+                "detail": f"prompt contains scope-cutting language",
+                "phrases": forbidden_found,
+            })
+            revision_hints.append(
+                f"Casting #{cid} '{title}': remove forbidden phrases from the prompt "
+                f"({', '.join(repr(p) for p in forbidden_found[:3])}). These phrases silently "
+                f"authorize scope cuts and are banned from teammate prompts."
+            )
+
+    dim7_ok = len(dim7_issues) == 0
+    if not dim7_ok:
+        issues.append({
+            "dimension": "prompt_fidelity",
+            "severity": "error",
+            "message": f"{len(dim7_issues)} prompt fidelity issue(s) detected",
+        })
+    dimensions["prompt_fidelity"] = {"ok": dim7_ok, "issues": dim7_issues}
+
     # ── Overall result ──
     # Fail on errors, warn on warnings
     error_count = sum(1 for i in issues if i.get("severity") == "error")
@@ -229,3 +342,132 @@ def foundry_validate_castings(
             "warning_count": len(issues) - error_count,
         },
     }
+
+
+# ── Helpers for Dimension 7: Prompt Fidelity ──────────────────────────
+
+
+_FORBIDDEN_PHRASES = [
+    # Scope-cutting patterns
+    "pick the core",
+    "pick the most important",
+    "don't port every",
+    "do not port every",
+    "skip the edge cases",
+    "skip the edge case",
+    "core coverage",
+    "main cases",
+    "the important ones",
+    "follow-up pr",
+    "follow up pr",
+    "user will validate manually",
+    "user will manually validate",
+    "user will confirm later",
+    "validate equivalence manually",
+    "intentionally out-of-scope",
+    "intentionally out of scope",
+    "reduced scope",
+    "target line count",
+    "target ~",
+    "aim for ~",
+    "keep it under",
+    # Hedge patterns
+    "sufficient coverage",
+    "equivalent to legacy for the main",
+    "prove the framework is sufficient",
+]
+
+
+def _normalize(text: str) -> str:
+    """Strip markdown formatting and collapse whitespace so substring
+    matching compares meaningful content rather than formatting.
+
+    Removes:
+      - Leading list markers (`-`, `*`, `+`, `1.`, etc.)
+      - Bold/italic wrappers (`**word**`, `*word*`, `__word__`, `_word_`)
+      - Leading/trailing whitespace on each line
+      - Consecutive blank lines (collapsed to single)
+
+    This means the prompt's <spec_requirements> block can render the
+    requirement without the spec's bullet formatting, but the meaningful
+    content (e.g. "US-1: User can click ...") must match character-for-
+    character after normalization.
+    """
+    if not text:
+        return ""
+    lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        # Strip leading list markers (-, *, +, 1., 1), a), etc.)
+        line = re.sub(r"^\s*(?:[-*+]|\d+[\.\)]|[a-z]\))\s+", "", line)
+        # Strip bold/italic wrappers: **X**, __X__, *X*, _X_
+        line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+        line = re.sub(r"__([^_]+)__", r"\1", line)
+        line = re.sub(r"\*([^*]+)\*", r"\1", line)
+        line = re.sub(r"_([^_]+)_", r"\1", line)
+        # Normalize internal whitespace
+        line = re.sub(r"\s+", " ", line).strip()
+        lines.append(line)
+    # Collapse consecutive blank lines
+    out = []
+    prev_blank = False
+    for ln in lines:
+        if not ln:
+            if not prev_blank:
+                out.append("")
+            prev_blank = True
+        else:
+            out.append(ln)
+            prev_blank = False
+    return "\n".join(out)
+
+
+def _extract_spec_block(prompt_text: str) -> str | None:
+    """Extract content between <spec_requirements>...</spec_requirements>.
+    Returns the normalized block content, or None if the block is missing.
+    """
+    match = re.search(
+        r"<spec_requirements>(.*?)</spec_requirements>",
+        prompt_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _normalize(match.group(1))
+
+
+def _find_drift(spec_block: str, normalized_spec: str) -> list[str]:
+    """Return lines from the prompt's spec block that don't appear in
+    normalized spec.md. The spec_block is already normalized when passed
+    in (via _extract_spec_block → _normalize). We split the normalized
+    spec by lines AND also check substring containment for multi-line
+    cases.
+
+    Short lines (<8 chars) are skipped to avoid false positives on
+    things like '---' or 'EOF'.
+    """
+    drift: list[str] = []
+    spec_lines = set(ln for ln in normalized_spec.splitlines() if ln.strip())
+    for line in spec_block.splitlines():
+        stripped = line.strip()
+        if len(stripped) < 8:
+            continue
+        if stripped in spec_lines:
+            continue
+        # Fallback: substring match against the full normalized spec
+        # (handles cases where the prompt wraps a requirement across
+        # fewer or more lines than the spec does)
+        if stripped in normalized_spec:
+            continue
+        drift.append(stripped)
+    return drift
+
+
+def _find_forbidden_phrases(prompt_text: str) -> list[str]:
+    """Return any forbidden scope-cutting phrases found in the prompt."""
+    lower = prompt_text.lower()
+    found: list[str] = []
+    for phrase in _FORBIDDEN_PHRASES:
+        if phrase in lower:
+            found.append(phrase)
+    return found

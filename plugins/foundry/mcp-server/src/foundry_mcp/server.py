@@ -38,6 +38,7 @@ from foundry_mcp.tools.forge_spec import (
     forge_spec_start,
     forge_spec_status,
 )
+from foundry_mcp.tools.foundry_spawn import foundry_spawn_teammate
 from foundry_mcp.tools.foundry_validate import foundry_validate_castings
 from foundry_mcp.tools.validation import validate_report
 
@@ -247,8 +248,25 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="Foundry-Validate-Castings",
-            description="Validate castings against spec across 6 dimensions before CAST. Returns pass/fail with revision hints.",
+            description="Validate castings against spec across 7 dimensions before CAST, including Prompt Fidelity (v3.0.0). Returns pass/fail with revision hints.",
             inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="Foundry-Spawn-Teammate",
+            description=(
+                "Read the pre-authored teammate prompt for a casting and return it verbatim. "
+                "The lead MUST pass the returned `prompt` field directly to the Agent tool without "
+                "modification. Authored at F0.5 DECOMPOSE from the spec, validated at F0.9, frozen. "
+                "This is the v3.0.0 architecture: plans are prompts, lead is a router not an interpreter."
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["casting_id"],
+                "properties": {
+                    "casting_id": {"type": ["integer", "string"], "description": "Casting id from manifest.json."},
+                    "phase": {"type": "string", "enum": ["cast", "grind"], "default": "cast"},
+                },
+            },
         ),
         Tool(
             name="Foundry-Team-Up",
@@ -375,6 +393,8 @@ _DISPATCH = {
         items_total=args.get("items_total", 0), findings_count=args.get("findings_count", 0),
         project_root=_project_root),
     "Foundry-Validate-Castings": lambda args: foundry_validate_castings(project_root=_project_root),
+    "Foundry-Spawn-Teammate": lambda args: foundry_spawn_teammate(
+        casting_id=args["casting_id"], phase=args.get("phase", "cast"), project_root=_project_root),
     "Foundry-Team-Up": lambda args: foundry_register_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Team-Down": lambda args: foundry_unregister_team(team_name=args["team_name"], project_root=_project_root),
     "Foundry-Directive": lambda args: foundry_inject_directive(
