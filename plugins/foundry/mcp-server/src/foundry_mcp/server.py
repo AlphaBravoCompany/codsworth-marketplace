@@ -139,8 +139,8 @@ async def list_tools() -> list[Tool]:
                 "required": ["cycle", "source", "defect_type", "description"],
                 "properties": {
                     "cycle": {"type": "integer"},
-                    "source": {"type": "string", "enum": ["trace", "prove", "sight", "test", "assay", "temper"]},
-                    "defect_type": {"type": "string", "enum": ["MISSING", "WRONG", "THIN", "HOLLOW", "UNWIRED", "BROKEN", "FAIL"]},
+                    "source": {"type": "string", "enum": ["trace", "prove", "research_audit", "sight", "test", "assay", "temper"]},
+                    "defect_type": {"type": "string", "enum": ["MISSING", "WRONG", "THIN", "HOLLOW", "UNWIRED", "BROKEN", "FAIL", "RESEARCH_DEVIATION"]},
                     "description": {"type": "string"},
                     "spec_ref": {"type": "string"},
                     "symbol": {"type": "string"},
@@ -237,7 +237,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "required": ["stream", "cycle", "items_checked"],
                 "properties": {
-                    "stream": {"type": "string", "enum": ["trace", "prove", "sight", "test", "probe"]},
+                    "stream": {"type": "string", "enum": ["trace", "prove", "research_audit", "sight", "test", "probe"]},
                     "cycle": {"type": "integer"},
                     "items_checked": {"type": "integer"},
                     "items_total": {"type": "integer"},

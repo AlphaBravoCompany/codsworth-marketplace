@@ -153,10 +153,11 @@ Follow the phases in order. Use MCP tools (`Foundry-Next`, `Foundry-Gate`, `Foun
 
 ---
 
-### F2: INSPECT (4 parallel streams)
+### F2: INSPECT (5 parallel streams)
 
 - **TRACE** — Spawn agent with tracer agent prompt (`agents/tracer.md`). Model: **sonnet**. Uses three-level verification (EXISTS → SUBSTANTIVE → WIRED).
-- **PROVE** — Spawn agent with assayer agent prompt (`agents/assayer.md`). Model: **opus**. Uses spec-before-code with stub detection.
+- **PROVE** — Spawn agent with assayer agent prompt (`agents/assayer.md`). Model: **opus**. Uses spec-before-code with stub detection AND research compliance dimension.
+- **RESEARCH_AUDIT** — Spawn agent with research-auditor agent prompt (`agents/research-auditor.md`). Model: **sonnet**. Reads every RESEARCH.md in `foundry-archive/{run}/research/` + the spec's Informational section, verifies the code honors each recommendation via grep + file reads. Deviations become `RESEARCH_DEVIATION` defects that feed F3 GRIND. Skip if there are no research artifacts AND no Informational items in the spec.
 - **SIGHT** — Lead runs Playwright directly (only exception to "lead never does work")
 - **TEST** — Run test suite inline
 - **PROBE** — Exercise APIs/smoke flows inline

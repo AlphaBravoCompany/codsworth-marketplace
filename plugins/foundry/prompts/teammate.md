@@ -156,9 +156,30 @@ Use whatever test command the casting specifies. If no test command is specified
 
 Tests MUST pass. If tests fail and the failures are related to your changes, fix them. If tests fail and the failures are pre-existing (unrelated to your changes), log them to `concerns.md` and proceed.
 
-### Step 4: Handle failures
+### Step 4: Research compliance check
 
-If self-check fails (build error, test failure, missing file):
+If your casting has a `research_context` field pointing at a RESEARCH.md (or your casting inherits Informational items from Forge R1.5 research in the spec), verify your code actually followed each recommendation.
+
+For each recommendation in the research:
+
+1. **Extract the rule.** Research recommendations look like:
+   - "Use `X` library — don't hand-roll"
+   - "Use typed client `DeploymentsGetter`, not dynamic client"
+   - "Version 2.x moved SSE to a separate package — stay on 1.9 or import the new package"
+   - "Use `k8s.io/client-go/kubernetes/fake` for tests"
+2. **Grep your code** for the pattern: `grep -r "the thing" src/`
+3. **Verify the code honors it.** If research says "use X", your code imports and uses X. If research says "don't do Y", your code doesn't do Y.
+4. **Document the check in your commit message or task update:** "Research: honored all N recommendations from research/{domain}.md".
+
+If you find a deviation:
+- **If the deviation is justified** (e.g., research was generic but codebase has a stricter pattern that overrides it): log a one-line note to `foundry-archive/{run}/concerns.md` explaining the override reason, then proceed.
+- **If the deviation is NOT justified**: fix the code inline (counts toward your 3-attempt limit), then re-run Steps 2-4.
+
+If there is no `research_context` for your casting and the spec has no Informational items from research, skip this step.
+
+### Step 5: Handle failures
+
+If self-check fails (build error, test failure, missing file, research deviation):
 
 1. Diagnose the issue
 2. Fix it (this counts toward your 3-attempt limit from the Deviation Rules)

@@ -53,9 +53,45 @@ For each VC-N item:
 2. Identify observable truths that are untestable from the code alone
 3. Check for spec requirements that have no corresponding code at all
 
-### Step 3: REPORT
+### Step 3: RESEARCH COMPLIANCE
 
-Output per-requirement verdicts with citations to exact spec text and code locations.
+The spec wasn't written in a vacuum. The research files in `foundry-archive/{run}/research/` (produced in F0 RESEARCH) contain prescriptive recommendations ("Use X library", "Don't hand-roll Y", "Use pattern Z for tests"). The spec's Informational section may also carry research findings from Forge R1.5. **The code must honor them.** A casting that satisfies the spec but ignores research is a defect.
+
+**Procedure:**
+
+1. **Enumerate research recommendations.**
+   - Read every `*.md` file in `foundry-archive/{run}/research/` (including SUMMARY.md if it exists)
+   - Read the Informational section of the spec (contains Forge R1.5 findings)
+   - Extract every prescriptive statement: "Use X", "Don't hand-roll Y", "Prefer Z over A", library version requirements, test-framework picks, pattern mandates
+   - Build a research checklist (RC-N items) alongside your spec verification checklist (VC-N items)
+
+2. **Verify each RC-N against the code.**
+   - For library recommendations: grep for the import/require/use statement → does the code use the recommended library?
+   - For anti-patterns ("don't hand-roll X"): grep for signs of hand-rolling → confirm none found
+   - For pattern mandates ("use errgroup for background services"): find where the pattern applies → confirm it's used
+   - For test framework picks: check the test file imports → confirm the recommended framework
+   - For version requirements: check go.mod / package.json / Cargo.toml → confirm the version
+
+3. **Assign a research verdict per RC-N:**
+
+| Verdict           | Meaning                                                        |
+|-------------------|----------------------------------------------------------------|
+| RESEARCH_HONORED  | Code follows the recommendation; cite the file:line proof      |
+| RESEARCH_IGNORED  | Recommendation was actionable but the code does not follow it  |
+| RESEARCH_CONFLICT | Code actively contradicts the recommendation (stronger than ignored — the code does the opposite) |
+| RESEARCH_N/A      | Recommendation doesn't apply to any code in scope              |
+
+4. **Deviations become defects.** Any RC-N with verdict `RESEARCH_IGNORED` or `RESEARCH_CONFLICT` is a defect. Include in the `defects` array with:
+   - `type: "RESEARCH_DEVIATION"`
+   - The research source (file + recommendation)
+   - The code location where the deviation occurs
+   - Why it's wrong (what the research said vs what the code does)
+
+**Exceptions.** If a RESEARCH_IGNORED case has a documented override in `foundry-archive/{run}/concerns.md` (a teammate logged a justified deviation with a reason), treat it as `RESEARCH_HONORED_WITH_OVERRIDE` and do NOT flag as a defect. The override file is the escape valve for cases where research was generic but the codebase has stricter rules.
+
+### Step 4: REPORT
+
+Output per-requirement verdicts with citations to exact spec text and code locations. Also output per-research-recommendation verdicts in a separate `research_compliance` section of the JSON output.
 
 ## Verdicts
 
@@ -141,9 +177,31 @@ When reporting HOLLOW verdicts for stubs, include:
       "pattern": "Missing auth middleware on DELETE endpoints",
       "affected": ["US-7", "US-12", "US-15"]
     }
-  ]
+  ],
+  "research_compliance": {
+    "summary": { "RESEARCH_HONORED": 8, "RESEARCH_IGNORED": 1, "RESEARCH_CONFLICT": 0, "RESEARCH_N/A": 2, "RESEARCH_HONORED_WITH_OVERRIDE": 1 },
+    "recommendations": [
+      {
+        "id": "RC-1",
+        "source": "foundry-archive/{run}/research/kubernetes-deployments.md",
+        "recommendation": "Use client-go typed DeploymentsGetter; do not implement label selectors manually",
+        "verdict": "RESEARCH_HONORED",
+        "evidence": "internal/status/collector.go:142 uses clientset.AppsV1().Deployments(ns).List with ListOptions.LabelSelector"
+      },
+      {
+        "id": "RC-4",
+        "source": "forge-specs/.../spec.md Informational section (from Forge R1.5)",
+        "recommendation": "htmx 2.x moved SSE to separate package — stay on 1.9 for this feature",
+        "verdict": "RESEARCH_IGNORED",
+        "deviation": "internal/web/templates/workloads.html imports htmx 2.x from CDN despite research saying stay on 1.9",
+        "spec_text_cited": "(Informational) htmx 2.x SSE extension is a separate package — this codebase is on 1.9, not migrating in this feature"
+      }
+    ]
+  }
 }
 ```
+
+Research deviations (`RESEARCH_IGNORED` / `RESEARCH_CONFLICT`) also get mirrored into the main `defects` array with `type: "RESEARCH_DEVIATION"` so they flow through F3 GRIND like any other defect.
 
 ## Tone: Brutally Honest (Squidward Mode)
 
@@ -180,3 +238,4 @@ Your job is to be RIGHT. Adopt these principles:
 - **No severity classification.** Do not classify defects by severity. Every defect gets fixed. Remove any temptation to skip "minor" issues.
 - **No "deferred" or "out of scope" verdicts.** If the spec says it, the code must do it. Period.
 - **Displacement check.** After verifying spec requirements, scan for code that exists WITHOUT spec justification. Report as DX-N findings. New features that pile on top of old code without removing the old code are leaving a mess.
+- **Research compliance is non-optional.** Research recommendations are not suggestions. If research says "use X library", the code must use X. A casting that implements the spec perfectly while ignoring research is a defective casting — log every deviation to the `defects` array with `type: "RESEARCH_DEVIATION"`. The only escape is a documented override in `concerns.md` with a justified reason.
