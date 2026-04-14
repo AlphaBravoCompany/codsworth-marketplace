@@ -199,11 +199,19 @@ cat > "$PROMPT_FILE" << SURVEY_PROMPT_EOF
 
 You are conducting a codebase-aware specification interview. Unlike a standard interview, you RESEARCH THE CODEBASE FIRST, then ask smart questions grounded in what you found.
 
-## PHASE R0: SURVEY — Codebase Research
+## PHASE R0: SURVEY + DOMAIN — Codebase Research + Ecosystem Orientation
 
-Before asking the user a single question, you must deeply explore the codebase. Spawn **4 parallel Explore agents** to investigate different dimensions of the codebase.
+Before asking the user a single question, you must run TWO parallel research tracks: a codebase survey (4 agents) and an ecosystem domain scan (1 agent). **All 5 agents are spawned in a SINGLE message.** Wait for all 5 to complete before proceeding to R1.
 
-**IMPORTANT:** Use the Agent tool with \`subagent_type: "Explore"\` for each. All 4 agents should be spawned in a SINGLE message (parallel execution).
+**Track A — Codebase survey (4 Explore agents)** investigate the existing repo. Use the Agent tool with \`subagent_type: "Explore"\` for each.
+
+**Track B — Domain scout (1 Agent)** investigates the feature category in the wider ecosystem before we know what the user will decide. Use \`subagent_type: "Agent"\` and pass the full content of \`\${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md\` as its prompt. Include in the prompt:
+- **Feature name:** "$FEATURE_NAME"
+- **Initial user ask:** "$FEATURE_NAME" (and any --context file content)
+- **Survey directory:** $SURVEY_DIR
+- Output path: \`$SURVEY_DIR/domain-orientation.md\`
+
+The domain-scout uses WebSearch + WebFetch to find 3-5 prior-art examples of this feature category, identifies the common "shape" of the feature, surfaces 3-5 common gotchas, and proposes questions the interviewer should ask the user. Outside-in only — it does NOT grep the codebase (that's Track A's job).
 $SCOPE_GUIDANCE
 
 ### Agent 1: ARCHITECT
@@ -293,7 +301,7 @@ Write your findings as structured markdown to: $SURVEY_DIR/infra.md
 Format: Use headers for each area. Include specific file paths and tool names.
 \`\`\`
 
-**After all 4 agents complete**, read all 4 survey files and proceed to PHASE R1.
+**After all 5 agents complete** (4 codebase + 1 domain-scout), read all survey files (architecture.md, data.md, surface.md, infra.md, domain-orientation.md) and proceed to PHASE R1.
 
 SURVEY_PROMPT_EOF
 
@@ -333,9 +341,9 @@ fi
 
 cat >> "$PROMPT_FILE" << SYNTH_PROMPT_EOF
 
-## PHASE R1: SYNTHESIZE — Build Codebase Reality Document
+## PHASE R1: SYNTHESIZE — Build Codebase + Domain Reality Document
 
-Read all 4 survey files and synthesize them into a single **codebase reality document**. Write this to the reality path specified in SESSION INFORMATION below.
+Read ALL 5 survey files (architecture.md, data.md, surface.md, infra.md, domain-orientation.md) and synthesize them into a single **reality document**. Write this to the reality path specified in SESSION INFORMATION below. The reality document now covers BOTH inside-in codebase knowledge AND outside-in domain orientation.
 $SYNTH_CONTEXT
 **Key instruction:** Do NOT just concatenate the survey files. Synthesize them — cross-reference findings, resolve contradictions, and prioritize information relevant to the feature being built ("$FEATURE_NAME").
 
@@ -368,6 +376,15 @@ Structure the reality document as:
 - Where new feature code should live (specific packages/directories)
 - What existing code to extend vs. create new
 - Dependencies to be aware of
+
+## Domain Orientation
+- The "common shape" of this feature category in the ecosystem (from domain-orientation.md)
+- 3-5 prior-art examples with URLs (from domain-orientation.md)
+- Common gotchas the interviewer should surface during R2 (from domain-orientation.md)
+- Questions the user probably hasn't thought about (from domain-orientation.md)
+- Stale-assumption flags if any (from domain-orientation.md)
+
+This section is the OUTSIDE-IN counterpart to the codebase sections above. The interviewer uses it to ask domain-aware questions instead of treating every feature as novel.
 
 ## Foundation Health
 - Issues found by survey agents in their "Foundation Issues" sections
@@ -1092,15 +1109,19 @@ fi)
 ## BEGIN NOW
 
 $(if [[ "$NO_SURVEY" == "false" ]]; then
-  echo "Start by spawning the 4 survey agents in parallel (PHASE R0). All 4 in a SINGLE message."
+  echo "Start by spawning the 5 R0 agents in parallel in a SINGLE message:"
+  echo "  - 4 Explore agents (Track A SURVEY: architecture, data, surface, infra)"
+  echo "  - 1 domain-scout Agent (Track B DOMAIN: ecosystem orientation)"
   echo ""
   echo "Replace {SURVEY_DIR} in the agent prompts with: $SURVEY_DIR"
+  echo ""
+  echo "For the domain-scout, pass the full content of \${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md as the prompt, plus the feature name and initial ask."
   if [[ -n "$FOCUS_DIRS" ]]; then
     echo ""
-    echo "Focus survey agents on these directories: $FOCUS_DIRS"
+    echo "Focus codebase survey agents on these directories: $FOCUS_DIRS"
   fi
 else
-  echo "Survey is skipped. Begin the interview immediately by asking your first grounded question about \"$FEATURE_NAME\" using AskUserQuestion."
+  echo "Survey is skipped (--no-survey passed — no codebase + no domain research). Begin the interview immediately by asking your first question about \"$FEATURE_NAME\" using AskUserQuestion."
 fi)
 
 SESSION_EOF

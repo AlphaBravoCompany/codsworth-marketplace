@@ -418,11 +418,19 @@ def _fmt_foundry_mark_phase_complete(r: dict) -> str:
 
 
 def _fmt_foundry_next_action(r: dict) -> str:
-    if "display" in r:
-        return r["display"]
+    # v3.3.0: always show BOTH the pixel-art status header (from the `display`
+    # field) AND the imperative instructions (which now lead with a
+    # "YOUR NEXT CALL:" line from Phase 6). Previously the function
+    # shortcut on `display` and swallowed the imperative.
+    instructions = r.get("instructions", "")
+    pre_rendered = r.get("display")
+    if pre_rendered and instructions:
+        return f"{pre_rendered}\n\n{instructions}"
+    if pre_rendered:
+        return pre_rendered
     return _foundry_display(f"F O U N D R Y  {r.get('phase', '?')}", [
         f"  {_BWHITE}Action:{_RESET}  {r.get('action', '?')}",
-        f"  {r.get('instructions', '')}",
+        f"  {instructions}",
     ])
 
 

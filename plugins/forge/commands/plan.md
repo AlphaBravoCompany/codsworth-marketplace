@@ -17,12 +17,21 @@ You are now conducting a codebase-aware specification interview. Follow the inst
 
 ## PHASE EXECUTION ORDER
 
-1. **R0: SURVEY** — Spawn 4 parallel Explore agents to research the codebase (unless --no-survey)
-2. **R1: SYNTHESIZE** — Read all survey files, write the reality document
-3. **R1.5: RESEARCH** — Targeted online research to kill assumptions before interviewing
-4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + ecosystem findings, with **spec_type detection and migration source enumeration**
+1. **R0: SURVEY + DOMAIN** (parallel, single message)
+   - **R0.A SURVEY** — 4 Explore agents research the codebase (architecture, data, surface, infra) (unless --no-survey)
+   - **R0.B DOMAIN** — 1 domain-scout agent runs ecosystem research on the feature category (prior art, common shapes, gotchas, questions the interviewer should ask). Uses `agents/domain-scout.md`. Runs even if no codebase exists, as long as `--no-survey` wasn't passed.
+2. **R1: SYNTHESIZE** — Read all survey files + domain-orientation.md, write the reality document
+3. **R1.5: RESEARCH** — Targeted online research to kill library-version assumptions (narrower than R0.B — this is stale-knowledge invalidation grounded in specific claims from reality.md)
+4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + domain + ecosystem findings, with **spec_type detection and migration source enumeration**
 5. **R3: SPEC** — Generate foundry-ready specification when user says "done"
 6. **R4: VALIDATE** — Verify all file references, pattern references, coverage
+
+**R0.A vs R0.B vs R1.5:**
+- **R0.A SURVEY** answers "what does THIS codebase look like?" (inside-in)
+- **R0.B DOMAIN** answers "what does this FEATURE CATEGORY look like in the ecosystem, and what are the common gotchas?" (outside-in, before we know what decisions the user will make)
+- **R1.5 RESEARCH** answers "are the specific library versions and APIs we plan to use still current?" (inside-out, after we know what the codebase uses)
+
+All three feed the R2 interviewer. Different jobs, different timing, different depth.
 
 ## SPEC TYPE DETECTION (R2) — MANDATORY
 
@@ -70,11 +79,15 @@ If you classified the feature as MIGRATION, you have additional mandatory duties
 
 6. **In R3 SPEC output**, include the full `source_inventory` and `destination_naming_rule` as top-level fields in both the markdown spec and the JSON spec. Foundry's decompose will read these to populate each casting's `coverage_list`.
 
-## SURVEY RULES (R0)
-- Spawn ALL 4 agents in a SINGLE message (parallel execution)
-- Use `subagent_type: "Explore"` for each agent
+## SURVEY + DOMAIN RULES (R0)
+- Spawn ALL 5 agents in a SINGLE message (parallel execution): 4 Explore agents for codebase survey + 1 domain-scout agent for ecosystem research
+- Use `subagent_type: "Explore"` for the 4 codebase agents
+- Use `subagent_type: "Agent"` for the domain-scout, passing the full content of `${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md` as its prompt
 - Each agent writes to the survey directory specified in SESSION INFORMATION
-- Wait for all 4 to complete before proceeding to R1
+- Wait for ALL 5 to complete before proceeding to R1
+- The domain-scout writes `domain-orientation.md`; R1 SYNTHESIZE reads it and merges it into reality.md
+
+**If `--no-survey` was passed:** skip BOTH R0.A and R0.B (no codebase + no domain research). Proceed directly to R2.
 
 ## RESEARCH RULES (R1.5)
 
