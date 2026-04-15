@@ -49,9 +49,26 @@ GLOBAL_INVARIANTS_HEADING_RE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# Accept:
+#   ## A-001
+#   ## A-001 [TAG, TAG]
+#   ## A-001 (short label)
+#   ## A-001 [TAG] (short label)
+# Reject (caught separately with a clearer error):
+#   ## A-005..A-008            (range form — one block per answer)
+#   ## A-005, A-006            (comma-batched)
 ANSWER_BLOCK_RE = re.compile(
-    r"^##\s+(A-\d+)(?:\s*\[([^\]]*)\])?\s*\n(.*?)(?=^##\s+[AQ]-\d+|^##\s+[A-Z]|\Z)",
+    r"^##\s+(A-\d+)"
+    r"(?:\s*\[([^\]]*)\])?"
+    r"(?:\s*\(([^)]*)\))?"
+    r"\s*\n(.*?)"
+    r"(?=^##\s+[AQ]-\d+|^##\s+[A-Z]|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+
+BATCHED_ANSWER_HEADING_RE = re.compile(
+    r"^##\s+A-\d+(?:\.\.A-\d+|\s*,\s*A-\d+)",
+    re.MULTILINE,
 )
 
 QUESTION_BLOCK_RE = re.compile(
@@ -151,6 +168,8 @@ class Answer:
     id: str
     body: str
     tags: list[str] = field(default_factory=list)
+    label: str = ""
+    normalized_body: str = ""
 
 
 @dataclass
@@ -175,15 +194,67 @@ class Report:
 
 
 def parse_transcript(text: str) -> dict[str, Answer]:
-    """Return {A-NNN: Answer(id, body, tags)}."""
+    """Return {A-NNN: Answer(id, body, tags, label, normalized_body)}.
+
+    Heading forms accepted (groups: id, tags, label, body):
+        ## A-001
+        ## A-001 [ARCH_INVARIANT]
+        ## A-001 (readiness path)
+        ## A-001 [ARCH_INVARIANT] (readiness path)
+    """
     answers: dict[str, Answer] = {}
     for match in ANSWER_BLOCK_RE.finditer(text):
         aid = match.group(1)
         tag_blob = match.group(2) or ""
-        body = match.group(3).strip()
+        label = (match.group(3) or "").strip()
+        body = match.group(4).strip()
         tags = [t.strip() for t in tag_blob.split(",") if t.strip()]
-        answers[aid] = Answer(id=aid, body=body, tags=tags)
+        answers[aid] = Answer(
+            id=aid,
+            body=body,
+            tags=tags,
+            label=label,
+            normalized_body=normalize_for_compare(body),
+        )
     return answers
+
+
+# ---------------------------------------------------------------------------
+# Verbatim normalization
+# ---------------------------------------------------------------------------
+
+# Map of "fuzzy-equivalent" character pairs. The verbatim check normalizes
+# both the spec quote and the transcript answer through this table before
+# substring comparison so cosmetic differences (smart quotes from copy-paste,
+# em-dash vs hyphen, NBSP) don't fail an otherwise-faithful quote.
+_UNICODE_NORMALIZE = {
+    "\u2018": "'",  # left single quote
+    "\u2019": "'",  # right single quote / apostrophe
+    "\u201c": '"',  # left double quote
+    "\u201d": '"',  # right double quote
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u2212": "-",  # minus sign
+    "\u00a0": " ",  # non-breaking space
+    "\u202f": " ",  # narrow no-break space
+    "\u2009": " ",  # thin space
+    "\u200b": "",   # zero-width space
+}
+
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def normalize_for_compare(text: str) -> str:
+    """Lowercase-preserving normalization for verbatim quote comparison.
+    Collapses whitespace runs, normalizes unicode punctuation, strips ends.
+    Preserves case (the verbatim contract is byte-faithful, but cosmetic
+    differences like smart quotes shouldn't break it).
+    """
+    out = text
+    for src, dst in _UNICODE_NORMALIZE.items():
+        out = out.replace(src, dst)
+    out = _WHITESPACE_RUN_RE.sub(" ", out)
+    return out.strip()
 
 
 def split_spec_body_appendix(text: str) -> tuple[str, str | None]:
@@ -228,6 +299,24 @@ def check_transcript_sanity(
         report.fail(
             f"TRANSCRIPT_TOO_SHALLOW: transcript has {len(answers)} "
             f"A-NNN answers, need ≥{MIN_TRANSCRIPT_ANSWERS}"
+        )
+
+
+def check_batched_headings(
+    transcript_text: str, report: Report
+) -> None:
+    """Forbid `## A-005..A-008` and `## A-005, A-006` style batched headings.
+    Each answer must have its own block — the parser cannot disambiguate
+    which body belongs to which ID, and the spec citations expect single IDs.
+    """
+    for match in BATCHED_ANSWER_HEADING_RE.finditer(transcript_text):
+        line = match.group(0).rstrip()
+        report.fail(
+            f"BATCHED_ANSWER_HEADING: transcript heading '{line}' batches "
+            f"multiple A-NNN IDs into one block. Split into separate "
+            f"`## A-NNN` headings — one per answer — and re-append the "
+            f"transcript appendix in the spec. The parser cannot tell which "
+            f"answer body belongs to which ID when they're batched."
         )
 
 
@@ -397,22 +486,32 @@ def _check_single_locked(
             f"transcript has no such answer(s). This is hallucination."
         )
         return
-    # L4: at least one quoted string is a byte-identical substring of some
-    # cited answer's body. (Multiple quotes allowed; at least one must match.)
+    # L4: at least one quoted string is a substring of some cited answer's
+    # body, after whitespace + unicode normalization. Cosmetic differences
+    # (smart quotes, em dash, line wrap) don't fail; semantic paraphrase does.
     matched_any = False
     for quote in quotes:
+        nq = normalize_for_compare(quote)
         for cid in cited_ids:
-            if quote in transcript_answers[cid].body:
+            if nq in transcript_answers[cid].normalized_body:
                 matched_any = True
                 break
         if matched_any:
             break
     if not matched_any:
-        preview = quotes[0][:80].replace("\n", " ")
+        preview = quotes[0][:120].replace("\n", " ")
+        cited_previews = "\n".join(
+            f"      {cid}: {transcript_answers[cid].body[:200]!r}"
+            + ("..." if len(transcript_answers[cid].body) > 200 else "")
+            for cid in cited_ids
+        )
         report.fail(
-            f"NOT_VERBATIM: {item_id} quotes '{preview}' but that text does "
-            f"not appear verbatim in cited answer(s) {cited_ids}. Either fix "
-            f"the quote to match the transcript, or re-classify as Flexible."
+            f"NOT_VERBATIM: {item_id} quotes '{preview}'\n"
+            f"    not found in cited answer(s):\n{cited_previews}\n"
+            f"    Fix: copy the user's actual words from the transcript "
+            f"into the quote (whitespace and smart-quote differences are "
+            f"already normalized — this is a real semantic mismatch). "
+            f"Or re-classify the item as Flexible."
         )
         report.verbatim_violated.add(item_id)
 
@@ -445,8 +544,9 @@ def check_opportunistic_fidelity(
             continue
         matched = False
         for quote in quotes:
+            nq = normalize_for_compare(quote)
             for cid in cited_ids:
-                if quote in transcript_answers[cid].body:
+                if nq in transcript_answers[cid].normalized_body:
                     matched = True
                     break
             if matched:
@@ -459,12 +559,18 @@ def check_opportunistic_fidelity(
             # Skip if the Locked check already flagged this item
             if label in report.verbatim_violated:
                 continue
-            preview = quotes[0][:80].replace("\n", " ")
+            preview = quotes[0][:120].replace("\n", " ")
+            cited_previews = "\n".join(
+                f"      {cid}: {transcript_answers[cid].body[:200]!r}"
+                + ("..." if len(transcript_answers[cid].body) > 200 else "")
+                for cid in cited_ids
+            )
             report.fail(
-                f"NOT_VERBATIM: {label} quotes '{preview}' but that text "
-                f"does not appear verbatim in cited answer(s) {cited_ids}. "
-                f"A `[from A-NNN]` marker next to a quoted string means the "
-                f"quote must be byte-identical to the cited answer."
+                f"NOT_VERBATIM: {label} quotes '{preview}'\n"
+                f"    not found in cited answer(s):\n{cited_previews}\n"
+                f"    Fix: copy the user's actual words from the transcript "
+                f"into the quote. Whitespace and smart-quote differences are "
+                f"already normalized — this is a real semantic mismatch."
             )
             report.verbatim_violated.add(label)
 
@@ -710,6 +816,7 @@ def main(argv: list[str]) -> int:
 
     report = Report()
 
+    check_batched_headings(transcript_text, report)
     check_transcript_sanity(transcript_answers, report)
     check_structure(spec_text, body, appendix, transcript_answers, report)
     check_locked_fidelity(body, transcript_answers, report)

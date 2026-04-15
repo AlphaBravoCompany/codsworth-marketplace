@@ -1,7 +1,7 @@
 {
   "name": "forge",
   "description": "Codebase-aware specification engine. Researches your code deeply, then conducts a grounded interview to produce foundry-ready specs. Forge plans. Foundry builds.",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "author": {
     "name": "AlphaBravo"
   }

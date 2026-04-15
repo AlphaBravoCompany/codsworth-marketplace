@@ -603,6 +603,13 @@ Base your next question on previous answers. If the user mentions something inte
    ```
 4. Only then ask the next question.
 
+**ID FORMAT — STRICT (v3.4.1):**
+
+- **One A-NNN per block. Always.** Never collapse multiple answers under a batched heading like `## A-005..A-008` or `## A-005, A-006`. The validator's parser cannot disambiguate which body belongs to which ID, so batched headings are silently dropped from the answer index — every spec citation pointing at a batched ID becomes a `DANGLING_CITATION` failure. If the user gave four related answers in one turn, write four separate `## A-NNN` blocks, each with its own body (which can repeat the user's words if the answers are genuinely identical).
+- **Optional tag**: `## A-NNN [TAG, TAG]` — used for `[ARCH_INVARIANT]` and any future markers. Tags go in square brackets immediately after the ID.
+- **Optional label**: `## A-NNN (short descriptor)` — a parenthetical hint at what the answer is about, useful for navigation in long interviews. Example: `## A-016 (readiness path)`. Labels are descriptive only; the parser ignores them for matching.
+- **Combined**: `## A-NNN [TAG] (label)` is fine in that order.
+
 **What NOT to do:**
 - **NEVER paraphrase the user's answer** in the transcript. If they said "operator stays generic, agent handles per-node stuff like IDM does," the transcript contains those exact words. Not "user wants operator to remain generic" — their literal sentence.
 - **NEVER summarize.** Not "user confirmed X." The literal utterance.
