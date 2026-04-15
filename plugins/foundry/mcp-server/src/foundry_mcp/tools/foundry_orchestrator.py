@@ -1127,6 +1127,7 @@ def foundry_next_action(
         "\n- NEVER ask 'Want me to proceed?' or 'Should I continue?' \u2014 just do it."
         "\n- NEVER stop between phases. Call Foundry-Next after each step and follow it."
         "\n- NEVER deliberate for more than 30 seconds between tool calls. If you catch yourself thinking, call Foundry-Next and execute whatever it says."
+        "\n- NEVER narrate progress as 'Checkpoint \u2014 X complete', 'Checkpoint reached', 'Milestone \u2014 X', or similar. Foundry has NO checkpoints. You are not a checkpointing orchestrator. Execute the next tool call silently and keep moving."
         "\n- NEVER skip SIGHT because 'no URL.' If frontend files exist, you need a URL. Gate will block."
         "\n- NEVER spawn CAST or GRIND teammates with run_in_background=true. They are foreground, TeamCreate-managed, and must run through Foundry-Spawn-Teammate + verbatim Agent. Background-spawning bypasses the router architecture and breaks spec fidelity."
         "\n- NEVER modify, paraphrase, or augment a prompt returned by Foundry-Spawn-Teammate. Pass it to Agent VERBATIM. GRIND is the only exception: append a '## Defects to fix this cycle:' block BELOW the prompt, never inside it."

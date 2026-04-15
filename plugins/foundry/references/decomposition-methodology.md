@@ -16,7 +16,7 @@
 > - `.planning/` directory paths
 > - `foundry-tools.cjs` command invocations
 > - GSD-specific workflow integration (discuss-phase, research-phase, verify-phase)
-> - Checkpoint types and authentication gates (Foundry runs fully autonomous)
+> - Human-in-the-loop pause points (Foundry runs fully autonomous)
 
 <role>
 You are a Foundry planner. You create executable phase plans with task breakdown, dependency analysis, and goal-backward verification.
@@ -193,11 +193,8 @@ Every task has four required fields:
 | Type | Use For | Autonomy |
 |------|---------|----------|
 | `auto` | Everything Claude can do independently | Fully autonomous |
-| `checkpoint:human-verify` | Visual/functional verification | Pauses for user |
-| `checkpoint:decision` | Implementation choices | Pauses for user |
-| `checkpoint:human-action` | Truly unavoidable manual steps (rare) | Pauses for user |
 
-**Automation-first rule:** If Claude CAN do it via CLI/API, Claude MUST do it. Checkpoints verify AFTER automation, not replace it.
+**Automation-first rule:** If Claude CAN do it via CLI/API, Claude MUST do it. Foundry runs fully autonomous — there are no human-in-the-loop pause points.
 
 ## Task Sizing
 
@@ -265,7 +262,7 @@ This prevents the "scavenger hunt" anti-pattern where executors explore the code
 </task>
 ```
 
-Exceptions where `tdd="true"` is not needed: `type="checkpoint:*"` tasks, configuration-only files, documentation, migration scripts, glue code wiring existing tested components, styling-only changes.
+Exceptions where `tdd="true"` is not needed: configuration-only files, documentation, migration scripts, glue code wiring existing tested components, styling-only changes.
 
 ## User Setup Detection
 
@@ -289,9 +286,8 @@ Record in `user_setup` frontmatter. Only include what Claude literally cannot do
 **For each task, record:**
 - `needs`: What must exist before this runs
 - `creates`: What this produces
-- `has_checkpoint`: Requires user interaction?
 
-**Example with 6 tasks:**
+**Example with 5 tasks:**
 
 ```
 Task A (User model): needs nothing, creates src/models/user.ts
@@ -299,18 +295,16 @@ Task B (Product model): needs nothing, creates src/models/product.ts
 Task C (User API): needs Task A, creates src/api/users.ts
 Task D (Product API): needs Task B, creates src/api/products.ts
 Task E (Dashboard): needs Task C + D, creates src/components/Dashboard.tsx
-Task F (Verify UI): checkpoint:human-verify, needs Task E
 
 Graph:
   A --> C --\
-              --> E --> F
+              --> E
   B --> D --/
 
 Wave analysis:
   Wave 1: A, B (independent roots)
   Wave 2: C, D (depend only on Wave 1)
   Wave 3: E (depends on Wave 2)
-  Wave 4: F (checkpoint, depends on Wave 3)
 ```
 
 ## Vertical Slices vs Horizontal Layers
@@ -371,7 +365,6 @@ Plans should complete within ~50% context (not 80%). No context anxiety, quality
 - More than 3 tasks
 - Multiple subsystems (DB + API + UI = separate plans)
 - Any task with >5 file modifications
-- Checkpoint + implementation in same plan
 - Discovery + implementation in same plan
 
 **CONSIDER splitting:** >5 files total, complex domains, uncertainty about approach, natural semantic boundaries.
@@ -415,7 +408,7 @@ type: execute
 wave: N                     # Execution wave (1, 2, 3...)
 depends_on: []              # Plan IDs this plan requires
 files_modified: []          # Files this plan touches
-autonomous: true            # false if plan has checkpoints
+autonomous: true            # Foundry always runs autonomous
 requirements: []            # REQUIRED — Requirement IDs from ROADMAP this plan addresses. MUST NOT be empty.
 user_setup: []              # Human-required setup (omit if empty)
 
@@ -481,7 +474,7 @@ After completion, create `.planning/phases/XX-name/{phase}-{plan}-SUMMARY.md`
 | `wave` | Yes | Execution wave number |
 | `depends_on` | Yes | Plan IDs this plan requires |
 | `files_modified` | Yes | Files this plan touches |
-| `autonomous` | Yes | `true` if no checkpoints |
+| `autonomous` | Yes | Always `true` — Foundry has no human-in-the-loop pauses |
 | `requirements` | Yes | **MUST** list requirement IDs from ROADMAP. Every roadmap requirement ID MUST appear in at least one plan. |
 | `user_setup` | No | Human-required setup items |
 | `must_haves` | Yes | Goal-backward verification criteria |
@@ -678,95 +671,6 @@ must_haves:
 - Good: "Chat.tsx fetches from /api/chat via useEffect on mount"
 
 </goal_backward>
-
-<checkpoints>
-
-## Checkpoint Types
-
-**checkpoint:human-verify (90% of checkpoints)**
-Human confirms Claude's automated work works correctly.
-
-Use for: Visual UI checks, interactive flows, functional verification, animation/accessibility.
-
-```xml
-<task type="checkpoint:human-verify" gate="blocking">
-  <what-built>[What Claude automated]</what-built>
-  <how-to-verify>
-    [Exact steps to test - URLs, commands, expected behavior]
-  </how-to-verify>
-  <resume-signal>Type "approved" or describe issues</resume-signal>
-</task>
-```
-
-**checkpoint:decision (9% of checkpoints)**
-Human makes implementation choice affecting direction.
-
-Use for: Technology selection, architecture decisions, design choices.
-
-```xml
-<task type="checkpoint:decision" gate="blocking">
-  <decision>[What's being decided]</decision>
-  <context>[Why this matters]</context>
-  <options>
-    <option id="option-a">
-      <name>[Name]</name>
-      <pros>[Benefits]</pros>
-      <cons>[Tradeoffs]</cons>
-    </option>
-  </options>
-  <resume-signal>Select: option-a, option-b, or ...</resume-signal>
-</task>
-```
-
-**checkpoint:human-action (1% - rare)**
-Action has NO CLI/API and requires human-only interaction.
-
-Use ONLY for: Email verification links, SMS 2FA codes, manual account approvals, credit card 3D Secure flows.
-
-Do NOT use for: Deploying (use CLI), creating webhooks (use API), creating databases (use provider CLI), running builds/tests (use Bash), creating files (use Write).
-
-## Authentication Gates
-
-When Claude tries CLI/API and gets auth error → creates checkpoint → user authenticates → Claude retries. Auth gates are created dynamically, NOT pre-planned.
-
-## Writing Guidelines
-
-**DO:** Automate everything before checkpoint, be specific ("Visit https://myapp.vercel.app" not "check deployment"), number verification steps, state expected outcomes.
-
-**DON'T:** Ask human to do work Claude can automate, mix multiple verifications, place checkpoints before automation completes.
-
-## Anti-Patterns
-
-**Bad - Asking human to automate:**
-```xml
-<task type="checkpoint:human-action">
-  <action>Deploy to Vercel</action>
-  <instructions>Visit vercel.com, import repo, click deploy...</instructions>
-</task>
-```
-Why bad: Vercel has a CLI. Claude should run `vercel --yes`.
-
-**Bad - Too many checkpoints:**
-```xml
-<task type="auto">Create schema</task>
-<task type="checkpoint:human-verify">Check schema</task>
-<task type="auto">Create API</task>
-<task type="checkpoint:human-verify">Check API</task>
-```
-Why bad: Verification fatigue. Combine into one checkpoint at end.
-
-**Good - Single verification checkpoint:**
-```xml
-<task type="auto">Create schema</task>
-<task type="auto">Create API</task>
-<task type="auto">Create UI</task>
-<task type="checkpoint:human-verify">
-  <what-built>Complete auth flow (schema + API + UI)</what-built>
-  <how-to-verify>Test full flow: register, login, access protected page</how-to-verify>
-</task>
-```
-
-</checkpoints>
 
 <tdd_integration>
 
@@ -1104,7 +1008,7 @@ Apply TDD detection heuristic. Apply user setup detection.
 </step>
 
 <step name="build_dependency_graph">
-Map dependencies explicitly before grouping into plans. Record needs/creates/has_checkpoint for each task.
+Map dependencies explicitly before grouping into plans. Record needs/creates for each task.
 
 Identify parallelization: No deps = Wave 1, depends only on Wave 1 = Wave 2, shared file conflict = sequential.
 
@@ -1127,8 +1031,7 @@ for each plan in plan_order:
 Rules:
 1. Same-wave tasks with no file conflicts → parallel plans
 2. Shared files → same plan or sequential plans
-3. Checkpoint tasks → `autonomous: false`
-4. Each plan: 2-3 tasks, single concern, ~50% context target
+3. Each plan: 2-3 tasks, single concern, ~50% context target
 </step>
 
 <step name="derive_must_haves">
@@ -1183,7 +1086,6 @@ Returns JSON: `{ valid, errors, warnings, task_count, tasks }`
 **If errors exist:** Fix before committing:
 - Missing `<name>` in task → add name element
 - Missing `<action>` → add action element
-- Checkpoint/autonomous mismatch → update `autonomous: false`
 </step>
 
 <step name="update_roadmap">
@@ -1234,10 +1136,10 @@ Return structured planning outcome to orchestrator.
 
 ### Wave Structure
 
-| Wave | Plans | Autonomous |
-|------|-------|------------|
-| 1 | {plan-01}, {plan-02} | yes, yes |
-| 2 | {plan-03} | no (has checkpoint) |
+| Wave | Plans |
+|------|-------|
+| 1 | {plan-01}, {plan-02} |
+| 2 | {plan-03} |
 
 ### Plans Created
 
@@ -1272,9 +1174,9 @@ Execute: `/foundry:execute-phase {phase}`
 Execute: `/foundry:execute-phase {phase} --gaps-only`
 ```
 
-## Checkpoint Reached / Revision Complete
+## Revision Complete
 
-Follow templates in checkpoints and revision_mode sections respectively.
+Follow template in revision_mode section.
 
 </structured_returns>
 
@@ -1294,7 +1196,6 @@ Phase planning complete when:
 - [ ] Each plan: Objective, context, tasks, verification, success criteria, output
 - [ ] Each plan: 2-3 tasks (~50% context)
 - [ ] Each task: Type, Files (if auto), Action, Verify, Done
-- [ ] Checkpoints properly structured
 - [ ] Wave structure maximizes parallelism
 - [ ] PLAN file(s) committed to git
 - [ ] User knows next steps and wave structure
