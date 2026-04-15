@@ -1128,6 +1128,8 @@ def foundry_next_action(
         "\n- NEVER stop between phases. Call Foundry-Next after each step and follow it."
         "\n- NEVER deliberate for more than 30 seconds between tool calls. If you catch yourself thinking, call Foundry-Next and execute whatever it says."
         "\n- NEVER skip SIGHT because 'no URL.' If frontend files exist, you need a URL. Gate will block."
+        "\n- NEVER spawn CAST or GRIND teammates with run_in_background=true. They are foreground, TeamCreate-managed, and must run through Foundry-Spawn-Teammate + verbatim Agent. Background-spawning bypasses the router architecture and breaks spec fidelity."
+        "\n- NEVER modify, paraphrase, or augment a prompt returned by Foundry-Spawn-Teammate. Pass it to Agent VERBATIM. GRIND is the only exception: append a '## Defects to fix this cycle:' block BELOW the prompt, never inside it."
         "\n- If the user typed a message, treat it as a directive. Absorb and keep going."
         "\n- Zero approval gates. The foundry runs until F6 DONE or an error stops it."
     )
@@ -1175,20 +1177,84 @@ def foundry_next_action(
 
 
 # v3.3.0: Action → imperative-header map. Each action returned by
-# _compute_next_action maps to a single-line "YOUR NEXT CALL" directive
-# that the lead can execute without re-reading paragraph instructions.
+# _compute_next_action maps to a "YOUR NEXT CALL(S)" directive that
+# the lead can execute without re-reading paragraph instructions.
+#
+# v3.3.2: Multi-step actions MUST enumerate every call. Compressing a
+# 5-step sequence into a single-line imperative is how v3.3.0 caused
+# the "background agents in CAST" regression: the lead followed the
+# first tool call literally, skipped the CONTEXT, and improvised the
+# rest by guessing.
 _ACTION_IMPERATIVES = {
     "init": "YOUR NEXT CALL: Foundry-Init (start a new run)",
     "cleanup_teams": "YOUR NEXT CALL: TeamDelete + Foundry-Team-Down for every active team, in order",
-    "add_castings": "YOUR NEXT CALL: TeamCreate('foundry-decompose') \u2192 Foundry-Team-Up \u2192 spawn decompose agents",
-    "transition_to_cast": "YOUR NEXT CALL: Foundry-Gate(phase='cast')",
-    "build_castings": "YOUR NEXT ACTION: WAIT for current CAST teammates. When all report complete, call TeamDelete + Foundry-Team-Down + Foundry-Phase(phase='cast')",
+    "add_castings": (
+        "YOUR NEXT CALLS (in order):\n"
+        "  (1) TeamCreate('foundry-decompose')\n"
+        "  (2) Foundry-Team-Up(team_name='foundry-decompose')\n"
+        "  (3) Spawn 1-5 Explore agents in a SINGLE message to write casting files to foundry-archive/{run}/castings/"
+    ),
+    "transition_to_cast": (
+        "YOUR NEXT CALLS (in order):\n"
+        "  (1) Foundry-Gate(phase='cast')\n"
+        "  (2) Foundry-Phase(phase='start_cast')\n"
+        "  (3) TeamCreate('foundry-cast-wave-1')\n"
+        "  (4) Foundry-Team-Up(team_name='foundry-cast-wave-1')\n"
+        "  (5) For EACH casting in wave 1: Foundry-Spawn-Teammate(casting_id=N, phase='cast')\n"
+        "  (6) For EACH returned prompt: spawn Agent with model='opus', subagent_type='general-purpose', "
+        "mode='bypassPermissions', prompt=<returned prompt text VERBATIM — no edits>. "
+        "NEVER spawn CAST teammates with run_in_background=true; they are foreground, TeamCreate-managed. "
+        "NEVER use subagent_type='Explore' for CAST (that's for F0 research and F2 inspect streams only)."
+    ),
+    "build_castings": (
+        "YOUR NEXT ACTION depends on wave state:\n"
+        "  - IF no CAST team has been registered this wave yet (first entry to F1): follow the transition_to_cast sequence "
+        "(TeamCreate \u2192 Foundry-Team-Up \u2192 Foundry-Spawn-Teammate per casting \u2192 Agent spawn VERBATIM, foreground).\n"
+        "  - IF teammates are currently running: WAIT for all to complete, then TeamDelete + Foundry-Team-Down + "
+        "Foundry-Phase(phase='cast'). Do NOT call Foundry-Next while waiting \u2014 it will re-emit this action."
+    ),
     "transition_to_inspect": "YOUR NEXT CALL: Foundry-Gate(phase='inspect')",
-    "run_streams": "YOUR NEXT CALL: spawn the missing INSPECT stream agents (see details.missing_streams). SIGHT runs in main thread.",
-    "transition_to_grind": "YOUR NEXT CALL: Foundry-Tasks",
-    "fix_defects": "YOUR NEXT ACTION: WAIT for GRIND teammates. When all defects fixed, call TeamDelete + Foundry-Team-Down + Foundry-Phase(phase='grind_done')",
-    "transition_to_assay": "YOUR NEXT CALL: Foundry-Phase(phase='inspect_clean')",
-    "run_assay": "YOUR NEXT CALL: spawn 4 parallel assayer agents (model=opus, subagent_type=Explore)",
+    "run_streams": (
+        "YOUR NEXT CALLS: spawn every missing INSPECT stream in a SINGLE parallel message. Stream-specific rules:\n"
+        "  - TRACE: Agent(model='opus', subagent_type='Explore', prompt=agents/tracer.md)\n"
+        "  - PROVE: Agent(model='opus', subagent_type='Explore', prompt=agents/assayer.md)\n"
+        "  - RESEARCH_AUDIT: Agent(model='sonnet', subagent_type='Explore', prompt=agents/research-auditor.md)\n"
+        "  - COVERAGE_DIFF (MIGRATION only): Agent(model='sonnet', subagent_type='Explore', prompt=agents/coverage-diff.md)\n"
+        "  - SIGHT: runs in MAIN THREAD via Playwright \u2014 not spawned as an Agent\n"
+        "  - TEST / PROBE: may run as background Agents\n"
+        "After each stream finishes, call Foundry-Stream(stream, cycle, items_checked, items_total, findings_count)."
+    ),
+    "transition_to_grind": (
+        "YOUR NEXT CALLS (in order):\n"
+        "  (1) Foundry-Tasks\n"
+        "  (2) Foundry-Gate(phase='grind')\n"
+        "  (3) Foundry-Phase(phase='grind_start')\n"
+        "  (4) TeamCreate('foundry-grind-N')\n"
+        "  (5) Foundry-Team-Up(team_name='foundry-grind-N')\n"
+        "  (6) For each casting with open defects: Foundry-Spawn-Teammate(casting_id=N, phase='grind')\n"
+        "  (7) Spawn Agent(model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
+        "prompt=<returned prompt VERBATIM, then APPEND the defect list in a '## Defects to fix this cycle:' block BELOW the prompt>). "
+        "Same foreground rule as CAST \u2014 never background-spawn GRIND teammates."
+    ),
+    "fix_defects": (
+        "YOUR NEXT ACTION depends on GRIND state:\n"
+        "  - IF no GRIND team registered yet: follow the transition_to_grind sequence.\n"
+        "  - IF teammates are running: WAIT. When all report complete, TeamDelete + Foundry-Team-Down + "
+        "update state to F2 + re-run INSPECT."
+    ),
+    "transition_to_assay": (
+        "YOUR NEXT CALLS (in order):\n"
+        "  (1) Foundry-Phase(phase='inspect_clean')\n"
+        "  (2) Foundry-Gate(phase='assay')\n"
+        "  (3) Update state to F4\n"
+        "  (4) Spawn 4 parallel assayer Agents in a SINGLE message: "
+        "model='opus', subagent_type='Explore', prompt=agents/assayer.md, effort=max"
+    ),
+    "run_assay": (
+        "YOUR NEXT CALL: spawn 4 parallel assayer Agents in a SINGLE message: "
+        "model='opus', subagent_type='Explore', prompt=agents/assayer.md, effort=max. "
+        "Each reads the spec FIRST, forms expectations, then reads code (spec-before-code)."
+    ),
     "transition_to_done": "YOUR NEXT CALL: Foundry-Phase(phase='done')",
 }
 
