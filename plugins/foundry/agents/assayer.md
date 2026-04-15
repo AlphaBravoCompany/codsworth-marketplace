@@ -53,6 +53,67 @@ For each VC-N item:
 2. Identify observable truths that are untestable from the code alone
 3. Check for spec requirements that have no corresponding code at all
 
+### Step 2.5: ARCHITECTURAL PLACEMENT (v3.4.0)
+
+Symbol existence and correct behavior are not enough — the implementation must also live in the architectural layer the spec authorizes. A `CreateDeployment` function that exists, runs, and passes every VC-N check is still wrong if the spec's Global Invariants say "the operator stays generic, per-node rendering happens in the agent" and the function lives in `operator/cloudinit.go` instead of `agent/reconciler.go`.
+
+This step exists because prior foundry runs produced "architecturally misplaced" code that passed stub detection, passed research compliance, and still had to be reverted — because PROVE was checking "does the symbol match spec text?" without checking "is the symbol in the layer the invariants authorize?"
+
+**Procedure:**
+
+1. **Read the `<global_invariants>` block from the casting prompt** (or from `manifest.global_invariants` if you're verifying across castings). This block is byte-identical across every casting in a run and comes verbatim from the spec's `## Global Invariants` section.
+
+2. **Short-circuit on explicit null.** If the invariants block is empty, or contains only the sentinel "None — the user gave no explicit placement constraints." (or equivalent — check for the substring "None —" at the start of the body), skip this step and record `placement_check: SKIPPED` in your output. No invariants = no placement rules = nothing to enforce. This is a legitimate state for features where the user genuinely had no placement opinions.
+
+3. **Extract placement constraints.** For each `GI-NNN` entry under `### Architectural Placement`, parse:
+   - The quoted user text (the invariant itself)
+   - The "Applies to:" line (which files/layers it constrains)
+   - The "Violation looks like:" line (what NOT to do)
+   If the spec uses the older flat-list format without GI-NNN IDs, treat each bullet point in the Architectural Placement subsection as an implicit invariant.
+
+4. **For each VC-N item you've verified, run a placement cross-check.**
+   - Which file does the implementing code live in?
+   - Does that file path satisfy every applicable GI-NNN?
+   - Example: VC-007 says "cluster renders haproxy peer config per node." Code lives in `internal/cluster/cloudinit/operator/adapters.go`. GI-001 says "operator stays generic — per-node rendering happens in the agent, not the operator." The file path contains `operator/` → **VIOLATION**. Even though the function exists, runs, and technically implements the requirement text, it violates the placement invariant.
+
+5. **Assign a placement verdict per VC-N that had a placement-relevant GI:**
+
+| Verdict       | Meaning                                                                                  |
+|---------------|------------------------------------------------------------------------------------------|
+| PLACED        | Code is in an architectural layer consistent with all applicable invariants              |
+| MISPLACED     | Code works but lives in a layer the invariants forbid (e.g., per-node logic in operator) |
+| PLACEMENT_N/A | No invariants apply to this requirement                                                  |
+
+6. **MISPLACED is a defect.** Any VC-N with verdict MISPLACED becomes a defect in the `defects` array with:
+   - `type: "ARCHITECTURAL_PLACEMENT"`
+   - The violated invariant (GI-NNN, quoted text)
+   - The file path where the code currently lives
+   - The layer/directory where it should live (derive from the invariant's "Applies to:" line or from the file structure)
+   - Why it's wrong (what the invariant says vs. where the code is)
+
+   Example defect:
+   ```
+   {
+     "type": "ARCHITECTURAL_PLACEMENT",
+     "requirement": "VC-007 (FR-029 per-node haproxy rendering)",
+     "violated_invariant": "GI-001: \"operator stays generic — per-node rendering happens in the agent, not the operator\"",
+     "current_location": "internal/cluster/cloudinit/operator/adapters.go:184",
+     "authorized_location": "internal/agent/reconciler/haproxy/ — alongside existing GetDeploymentPeers callers",
+     "note": "Code correctly implements per-node rendering logic but lives in the operator, which GI-001 forbids. The operator should render cluster-wide templates with placeholder tokens; the agent should resolve node identity at boot and substitute values. See IDM's existing pattern for the reference implementation."
+   }
+   ```
+
+7. **MISPLACED overrides VERIFIED.** If a VC-N was going to be VERIFIED but is also MISPLACED, its final verdict is MISPLACED, and it goes in the defects array regardless of how correct the implementation looks in isolation. Placement failures are load-bearing — they require a full revert, not a local patch. Fixing MISPLACED usually means moving the code, not editing it in place.
+
+8. **Emit placement verdicts in a dedicated output section** alongside `requirements` and `research_compliance`:
+   ```json
+   "placement_compliance": {
+     "invariants_checked": 3,
+     "summary": { "PLACED": 15, "MISPLACED": 2, "PLACEMENT_N/A": 8 },
+     "violations": [ /* MISPLACED defects */ ]
+   }
+   ```
+
 ### Step 3: RESEARCH COMPLIANCE
 
 The spec wasn't written in a vacuum. The research files in `foundry-archive/{run}/research/` (produced in F0 RESEARCH) contain prescriptive recommendations ("Use X library", "Don't hand-roll Y", "Use pattern Z for tests"). The spec's Informational section may also carry research findings from Forge R1.5. **The code must honor them.** A casting that satisfies the spec but ignores research is a defect.
@@ -103,6 +164,7 @@ Output per-requirement verdicts with citations to exact spec text and code locat
 | PARTIAL              | Some aspects implemented, others missing                  |
 | MISSING              | No implementation found for this requirement              |
 | WRONG                | Implementation contradicts the spec                       |
+| MISPLACED            | (v3.4.0) Code exists and works but lives in a layer forbidden by a `## Global Invariants` entry. See Step 2.5. Overrides VERIFIED when both apply — architectural placement failures are load-bearing and cannot be patched locally. |
 | COVERAGE_INCOMPLETE  | (MIGRATION specs only) A source item in the casting's `coverage_list` has no destination counterpart. Distinct from MISSING — this is about 1:1 port completeness, not about a new requirement having no code. |
 
 ## Deep Reference

@@ -1,7 +1,7 @@
 ---
 description: "Start a codebase-aware specification interview for a feature"
 argument-hint: "FEATURE_NAME [--context FILE] [--output-dir DIR] [--no-survey] [--focus DIRS] [--first-principles]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-forge.sh:*)", "AskUserQuestion", "Read", "Write", "Glob", "Grep", "Agent"]
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-forge.sh:*)", "Bash(python3:*)", "AskUserQuestion", "Read", "Write", "Edit", "Glob", "Grep", "Agent"]
 hide-from-slash-command-tool: "true"
 ---
 
@@ -124,6 +124,8 @@ After writing `reality.md`, identify 2-4 **targeted** research domains grounded 
 5. **Surface research conflicts.** If research found something that contradicts what the user seems to assume, tell them explicitly: "You mentioned X, but my research of current {library} docs shows Y. Which way do you want to go?"
 6. Continue until user says "done" or "finalize"
 7. Update the draft spec file regularly using the Write tool
+8. **VERBATIM TRANSCRIPT (v3.4.0):** Append every question AND user answer verbatim to `transcript.md` immediately after each AskUserQuestion returns. Use stable IDs (Q-001, A-001, Q-002, A-002, ...). Never paraphrase; never batch. The transcript is the source of truth — the structured spec.md is an index over it. See R2 rule #8 in setup-forge.sh for the full procedure.
+9. **ARCHITECTURAL PLACEMENT DETECTION (v3.4.0):** When the user describes *where code lives* ("operator stays generic", "X must not know about Y", "agent handles Z, not the operator", "reuse existing RPC", "treat X as a library"), tag that A-NNN in the transcript with `[ARCH_INVARIANT]`. These answers become the `## Global Invariants` section of the final spec and are propagated verbatim into every foundry casting's `<global_invariants>` block. Missing these at interview time means downstream teammates will put code in the wrong architectural layer.
 
 ## FINALIZATION CONSTRAINTS — CRITICAL
 
@@ -141,25 +143,33 @@ When the user says "done", "finalize", "finished", or similar:
 - NO implementation of any kind — you are ONLY writing spec documents
 
 ### FINALIZATION SEQUENCE:
-1. Write the final markdown spec (PHASE R3 template)
-2. Validate the spec (PHASE R4 checks)
-3. Write the JSON spec
-4. Write the progress file with all phases marked [PENDING]
-5. Delete the state file
-6. Output `<promise>SPEC FORGED</promise>`
-7. STOP IMMEDIATELY — do not continue with any other actions
+1. **Read `transcript.md` in full** — its bytes for the Appendix, its A-NNN index for citation validation.
+2. Generate the spec body (PHASE R3 template) — every Locked item quoted + cited; every other bullet cited via `[from A-NNN]` / `[derived from A-NNN]` / `[from survey/...]`.
+3. **Append `## Appendix: Interview Transcript`** with the full byte content of transcript.md pasted verbatim. No truncation.
+4. Write the draft spec (body + appendix) to the canonical spec path in one Write call.
+5. **Run the deterministic gate:** `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate-spec.py <spec.md> <transcript.md>`
+   - **Exit 0:** proceed to step 6.
+   - **Exit 1:** read the numbered failures, fix the spec via Edit/Write on the canonical spec path, re-run the script. Loop until exit 0. This is a HARD STOP — the script is authoritative, your self-check is not.
+6. Write the JSON spec.
+7. Write the progress file with all phases marked [PENDING].
+8. Delete the state file.
+9. Do NOT delete transcript.md — it remains as the working artifact.
+10. Output `<promise>SPEC FORGED</promise>`.
+11. STOP IMMEDIATELY — do not continue with any other actions.
 
-## REQUIREMENT CLASSIFICATION
+## REQUIREMENT CLASSIFICATION (v3.4.0 — verbatim-fidelity enforced)
 
-During finalization (R3: SPEC), classify every requirement into one of three categories:
+During finalization (R3: SPEC), classify every requirement into one of three categories. **Locked requirements MUST quote the user verbatim with a transcript citation — see R3/R4 in setup-forge.sh for the hard rules. This section is the conceptual overview; the hard rules override if they conflict.**
 
-### Locked (implement exactly as specified)
-Requirements where the user gave specific, concrete instructions. The implementation must match exactly — no creative interpretation.
+### Locked (implement exactly as specified — direct quote from transcript)
+Requirements where the user gave specific, concrete instructions. The spec contains the user's literal words in quotes with a `[from A-NNN]` citation pointing at the transcript.md answer it came from. No paraphrase, no interpretation, no "in other words."
 
-Examples:
-- "Passwords must be hashed with bcrypt (cost factor 12)"
-- "The API must return 429 after 100 requests per minute"
-- Specific data formats, protocols, or algorithms named by the user
+Examples (note the quote+cite format):
+- **FR-001** [from A-012]: "passwords must be hashed with bcrypt, cost factor 12"
+- **FR-002** [from A-015]: "the API must return 429 after 100 requests per minute per user"
+- **GI-001** [from A-020]: "operator stays generic — per-node rendering happens in the agent, not the operator" (architectural placement → Global Invariants section)
+
+**If you can't find a verbatim quote in the transcript to support a Locked item, the item is not Locked — it's Flexible, or it needs another interview round. Never invent a quote.**
 
 ### Flexible (Claude's discretion on approach)
 Requirements where the user described the WHAT but not the HOW. The implementing agent has discretion on approach.

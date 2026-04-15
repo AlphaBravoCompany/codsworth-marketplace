@@ -135,6 +135,7 @@ JSON_PATH="$OUTPUT_DIR/$FEATURE_SLUG/spec.json"
 PROGRESS_PATH="$OUTPUT_DIR/$FEATURE_SLUG/progress.txt"
 DRAFT_PATH="$OUTPUT_DIR/$FEATURE_SLUG/draft.md"
 STATE_PATH="$OUTPUT_DIR/$FEATURE_SLUG/state.md"
+TRANSCRIPT_PATH="$OUTPUT_DIR/$FEATURE_SLUG/transcript.md"
 SURVEY_DIR="$OUTPUT_DIR/$FEATURE_SLUG/survey"
 REALITY_PATH="$OUTPUT_DIR/$FEATURE_SLUG/reality.md"
 TIMESTAMP=$(date +%Y-%m-%d)
@@ -583,6 +584,55 @@ After every 2-3 questions, update the draft spec file with accumulated informati
 #### 7. BE ADAPTIVE
 Base your next question on previous answers. If the user mentions something interesting, probe deeper. Do not follow a rigid script. Build on what you learn.
 
+#### 8. VERBATIM TRANSCRIPT — THIS IS THE SOURCE OF TRUTH (v3.4.0)
+
+**Every question you ask and every answer the user gives MUST be appended verbatim to `transcript.md` with stable IDs. This is non-negotiable. The transcript IS the spec — the structured spec.md is an index over it.**
+
+**Procedure for every Q/A exchange:**
+
+1. Before calling AskUserQuestion, decide the next Q-ID (Q-001, Q-002, ...). IDs are monotonic across the whole interview.
+2. Call AskUserQuestion.
+3. When the user answers, immediately Write/Edit `transcript.md` to append:
+   ```
+   ## Q-NNN
+   **Question:** {exact text of the question you asked, verbatim, including any options you presented}
+   **Options presented:** {the options array you passed to AskUserQuestion, one per line}
+
+   ## A-NNN
+   {the user's answer VERBATIM — if they selected an option, paste the full option text; if they typed freeform, paste their exact words without rewording, rephrasing, or "cleaning up"}
+   ```
+4. Only then ask the next question.
+
+**What NOT to do:**
+- **NEVER paraphrase the user's answer** in the transcript. If they said "operator stays generic, agent handles per-node stuff like IDM does," the transcript contains those exact words. Not "user wants operator to remain generic" — their literal sentence.
+- **NEVER summarize.** Not "user confirmed X." The literal utterance.
+- **NEVER omit freeform answers** because they seem obvious or redundant.
+- **NEVER batch transcript writes.** Write after every answer, not every 5 answers. If the session dies mid-interview, the transcript must be accurate up to the last question answered.
+
+**Why:** Downstream, Foundry CAST teammates will read the spec and implement from it. If the spec paraphrases the user's words, the teammate is implementing from Claude's gloss of what the user said — two layers of drift before a single line of code is written. Verbatim capture + citation in the spec keeps the teammates grounded in the user's literal intent. The architectural-placement failures we've seen (code in the wrong layer because "Informational context" lost the user's exact constraint) trace directly to paraphrased interviews.
+
+#### 9. ARCHITECTURAL PLACEMENT DETECTION
+
+As the user answers, watch for **architectural placement language** — statements about *where code should live*, *which layer owns what*, or *what some component should NOT know about*:
+
+- "The operator stays generic — per-node logic happens in the agent"
+- "X should never know about Y"
+- "This has to go through {module}, not {other module}"
+- "Reuse the existing {seam/RPC/interface} — don't add a parallel one"
+- "{Component A} owns {concern}; {Component B} just calls it"
+- "Treat X as a library — it can't depend on Y"
+
+When you detect any of these, tag the relevant A-NNN in the transcript with a marker:
+
+```
+## A-NNN  [ARCH_INVARIANT]
+{verbatim user answer}
+```
+
+These tagged answers become the `## Global Invariants` section of the final spec (see R3). They are the highest-priority constraints — they determine not just what code does but where it lives. Missing these at interview time means Foundry teammates will put code in the wrong architectural layer and require a full revert cycle to fix.
+
+If the user's initial prompt already contains placement language, you MUST either confirm it with an explicit question (AskUserQuestion: "You said '{quote}' — is this a hard architectural constraint, or are you open to alternatives?") or carry it into the transcript as a Q-000/A-000 bootstrap entry quoting the prompt verbatim.
+
 ### DOMAIN DETECTION
 
 Analyze the feature request and classify which domains apply. This determines your question focus:
@@ -771,152 +821,208 @@ Take your time. A thorough spec prevents weeks of back-and-forth during implemen
 > Date: {TIMESTAMP}
 
 ## Problem Statement
-[1-3 sentences from interview]
+
+> **Every sentence in this section MUST end with a `[from A-NNN]` or `[derived from A-NNN, A-NNN]` citation.** No unsourced prose.
+
+[1-3 sentences synthesized from interview, each followed by its transcript citation.] [derived from A-NNN, A-NNN]
+
+## Global Invariants
+
+> **v3.4.0 — cross-cutting rules that apply to every casting.** Each invariant MUST be a direct quote from the transcript with a citation. No paraphrase. Foundry decompose copies this section verbatim into every casting's `<global_invariants>` block; PROVE and TRACE enforce architectural placement against it.
+
+### Architectural Placement
+
+Rules about *where code lives*, *which layer owns what*, *what components must not know about*. These are the most important invariants — violating them produces code in the wrong layer and requires full revert cycles.
+
+- **GI-001** [from A-NNN]: "exact quoted user text describing a placement rule"
+  - Applies to: {which files/layers this constrains}
+  - Violation looks like: {concrete example of what NOT to do}
+- **GI-002** [from A-NNN]: "..."
+
+*(If the user made no architectural-placement statements in the transcript, write "None — the user gave no explicit placement constraints." Do NOT invent invariants.)*
+
+### Cross-Cutting Technical Rules
+
+Non-placement rules that apply across the whole feature (error patterns, logging, versioning, etc.). Same quote+cite format.
+
+- **GI-NNN** [from A-NNN]: "..."
+
+---
 
 ## Scope
 
+> **Every bullet MUST carry a citation.** If you can't cite a transcript answer that supports a scope item, the item doesn't belong in the spec.
+
 ### In Scope
-- [Explicit list from interview]
+- [Scope item] [from A-NNN]
+- [Scope item] [derived from A-NNN, A-NNN]
 
 ### Out of Scope
-- [Explicit list from interview — be specific about what is NOT included]
+- [Exclusion] [from A-NNN — user explicitly said "not this"]
+- [Exclusion] [derived from A-NNN — user's priorities implied this was deferred]
 
 ---
 
 ## User Stories
 
-### US-001: [Story Title]
+> **Every US and every AC carries citations.** The `As a / I want / so that` narrative is Claude's synthesis of the user's answers; the citation proves the synthesis is grounded. If no transcript answer supports a User Story, the story is hallucination — delete it and ask the user.
+
+### US-001: [Story Title] [derived from A-NNN, A-NNN]
 **As a** [user type], **I want** [action], **so that** [benefit].
 
+**Source answers (not authoritative — navigate to the Appendix Transcript for full context):**
+- A-NNN: "short quoted fragment showing the user's relevant words"
+- A-NNN: "..."
+
 **Acceptance Criteria:**
-- AC-001: [Specific, testable criterion — e.g., "POST /api/users returns 201 with Location header"]
-- AC-002: [Error case — e.g., "Duplicate email returns 409 with error body {code: 'EMAIL_EXISTS'}"]
-- AC-003: [Edge case — e.g., "Password under 8 chars returns 400 with validation details"]
+- **AC-001** [from A-NNN]: "verbatim user words if Locked" OR [derived from A-NNN]: Claude-worded testable criterion
+- **AC-002** [from A-NNN]: "..." (error case — must be testable AND cited)
+- **AC-003** [derived from A-NNN]: ... (edge case)
 
-**Codebase Integration:**
-- Extends: `services/auth.go:AuthService.CreateUser` (line ~45) — add permission check
-- Follows pattern: `handlers/users.go:HandleCreateUser` — validate → service → respond
-- New files: `services/permissions.go` (in `services/` alongside existing service files)
-- Modifies: `models/user.go:User` struct — add `Permissions []string` field
+**Codebase Integration** (derived from survey, not from interview — cite the survey file):
+- Extends: `services/auth.go:AuthService.CreateUser` (line ~45) — add permission check [from survey/architecture.md]
+- Follows pattern: `handlers/users.go:HandleCreateUser` — validate → service → respond [from survey/surface.md]
+- New files: `services/permissions.go` (in `services/` alongside existing service files) [derived from survey/architecture.md + A-NNN]
+- Modifies: `models/user.go:User` struct — add `Permissions []string` field [derived from A-NNN]
 
-### US-002: ...
+### US-002: ... [derived from A-NNN]
 
 ---
 
 ## Functional Requirements
 
-- FR-001: [Requirement with specific behavior] — Maps to US-001
-- FR-002: [Requirement with specific behavior] — Maps to US-001, US-002
+> **v3.4.0 — Locked requirements MUST quote the user verbatim with a transcript citation. Flexible requirements cite the source answer but may be Claude-worded. Informational items are background context only.**
+
+### Locked (implement exactly as specified — direct quotes from transcript)
+
+- **FR-001** [from A-NNN]: "exact quoted user text — the user's literal words, not a paraphrase"
+  - Maps to: US-001
+  - Claude's gloss (for reading convenience only, not authoritative): [optional short restatement]
+- **FR-002** [from A-NNN]: "..."
+  - Maps to: US-001, US-002
+
+### Flexible (Claude's discretion on approach)
+
+- **FR-NNN** [derived from A-NNN]: [Claude-worded requirement — user described the WHAT but not the HOW]
+  - Maps to: US-NNN
+  - Source answer: "relevant quoted fragment from A-NNN for traceability"
+
+### Informational (context, not requirements)
+
+- [Background fact from user] [from A-NNN]
+- [Research finding from R1.5] [from reality.md Research Findings]
 
 ## Non-Functional Requirements
 
-- NFR-001: [Requirement with measurable metric — e.g., "API response < 200ms p95"]
-- NFR-002: ...
+Same Locked/Flexible/Informational structure as Functional Requirements. Every Locked NFR must quote the user.
+
+- **NFR-001** [from A-NNN]: "exact quoted measurable metric from user"
 
 ---
 
 ## Technical Design
 
+> **Every design decision in this section must cite EITHER a transcript answer (if the user made the decision) OR a survey file (if the decision is inherited from codebase reality).** Claude's aesthetic preferences are not a valid source. If a decision has no transcript or survey backing, it does not go in the spec — it's Claude filling silence.
+
 ### Data Model Changes
 
 **Current state** (from survey):
-[Show the EXISTING model/schema that will be modified, with file path]
+[Existing model/schema that will be modified, with file path] [from survey/data.md]
 
 **Proposed changes:**
-[Show exactly what fields/tables/types are added/modified/removed]
-[Include migration strategy if schema changes — additive only? breaking?]
+- [Change 1] [from A-NNN — user specified] OR [derived from A-NNN — user described the behavior and this is the minimal schema]
+- [Change 2] [from A-NNN]
+- Migration strategy: [additive | breaking | rolling] [from A-NNN]
 
 ### API Design
 
 **New endpoints:**
-| Method | Path | Handler | Request Body | Response | Auth |
-|--------|------|---------|-------------|----------|------|
-| POST   | /api/... | `handlers/...` | `{...}` | 201: `{...}` | Required |
+| Method | Path | Handler | Request Body | Response | Auth | Source |
+|--------|------|---------|-------------|----------|------|--------|
+| POST   | /api/... | `handlers/...` | `{...}` | 201: `{...}` | Required | [from A-NNN] |
 
 **Modified endpoints:**
-[Which existing endpoints change and how — reference current handler file paths]
+- [Endpoint + what changes] [from A-NNN] [from survey/surface.md]
 
 **Pattern to follow:**
-[Reference a specific existing endpoint as the template — e.g., "Follow handlers/users.go:HandleCreateUser"]
+- [Reference a specific existing endpoint as the template] [from survey/surface.md + A-NNN if user chose to match]
 
 ### Architecture
 
 **Component diagram:**
-[How new components fit into existing architecture — reference actual packages]
+[How new components fit into existing architecture — reference actual packages] [from survey/architecture.md, decisions from A-NNN]
 
 **Dependency flow:**
-[What depends on new code, what new code depends on — reference specific imports]
+[What depends on new code, what new code depends on — reference specific imports] [from survey/architecture.md + A-NNN]
 
 ### Error Handling
 
 **Pattern to follow** (from survey):
-[Reference the actual error handling pattern in the codebase — e.g., "Wrap with fmt.Errorf like services/users.go:L34"]
+[Reference the actual error handling pattern in the codebase] [from survey/architecture.md]
 
 **Error cases for this feature:**
-| Scenario | HTTP Status | Error Code | Message |
-|----------|-------------|------------|---------|
-| ... | 400 | VALIDATION_ERROR | "..." |
-| ... | 409 | CONFLICT | "..." |
+| Scenario | HTTP Status | Error Code | Message | Source |
+|----------|-------------|------------|---------|--------|
+| ... | 400 | VALIDATION_ERROR | "..." | [from A-NNN] |
+| ... | 409 | CONFLICT | "..." | [from A-NNN] |
 
 ---
 
 ## File Change Map
 
-Exactly which files are touched and what happens in each:
+Exactly which files are touched and what happens in each. **Every row cites the transcript answer or survey file that justifies the change.**
 
 ### Modified Files
-| File | What Changes | Lines/Functions Affected |
-|------|-------------|------------------------|
-| `models/user.go` | Add Permissions field to User struct | `User` struct (~L15) |
-| `services/auth.go` | Add permission check to CreateUser | `CreateUser()` (~L45) |
-| ... | ... | ... |
+| File | What Changes | Lines/Functions Affected | Source |
+|------|-------------|------------------------|--------|
+| `models/user.go` | Add Permissions field to User struct | `User` struct (~L15) | [from A-NNN — user said "users need roles"] [from survey/data.md] |
+| `services/auth.go` | Add permission check to CreateUser | `CreateUser()` (~L45) | [derived from A-NNN — user specified RBAC] |
 
 ### New Files
-| File | Purpose | Pattern Source |
-|------|---------|---------------|
-| `services/permissions.go` | Permission CRUD service | Follows `services/users.go` pattern |
-| `handlers/permissions.go` | Permission API handlers | Follows `handlers/users.go` pattern |
-| ... | ... | ... |
+| File | Purpose | Pattern Source | Source |
+|------|---------|---------------|--------|
+| `services/permissions.go` | Permission CRUD service | Follows `services/users.go` pattern | [derived from A-NNN + survey/architecture.md] |
+| `handlers/permissions.go` | Permission API handlers | Follows `handlers/users.go` pattern | [derived from A-NNN + survey/surface.md] |
 
 ---
 
 ## Observable Truths
 
-These are verification targets for foundry's INSPECT/ASSAY phases.
-Each must be independently verifiable by reading code or running a test.
+These are verification targets for foundry's INSPECT/ASSAY phases. Each must be (a) independently verifiable by reading code or running a test AND (b) traceable to a transcript answer that justifies why it's a truth worth observing.
+
+> **Every OT must cite a transcript answer.** Observable Truths that have no transcript source are Claude-generated assertions — they're testable in isolation but unanchored to anything the user actually wanted, so they measure the wrong thing. If you can't cite a source, ask the user a follow-up question instead of inventing an OT.
 
 ### Domain: [domain-name]
-- OT-001: [User-perspective verifiable statement — e.g., "A user with 'admin' role can access GET /api/admin"]
-- OT-002: [Error case — e.g., "A user without 'admin' role receives 403 from GET /api/admin"]
-- OT-003: [Edge case — e.g., "A user with empty permissions array can only access public endpoints"]
-- OT-004: [Integration — e.g., "Creating a user with POST /api/users assigns default permissions"]
-- OT-005: [Data — e.g., "Permissions are stored in the users table, not a separate join table"]
+- **OT-001** [from A-NNN]: [user-perspective verifiable statement — e.g., "A user with 'admin' role can access GET /api/admin"]
+- **OT-002** [from A-NNN]: [error case]
+- **OT-003** [derived from A-NNN]: [edge case the user's answer implied]
+- **OT-004** [derived from A-NNN, A-NNN]: [integration truth]
+- **OT-005** [from A-NNN]: [data truth]
 
 ### Domain: [domain-name-2]
-- OT-006: ...
+- **OT-006** [from A-NNN]: ...
 
 ---
 
 ## Implementation Phases
 
+> **Every phase task carries a citation to either the requirement it implements or the transcript answer that motivates it.** Phases are Claude's sequencing — but the *content* of each task must trace to a requirement or a user answer.
+
 ### Phase 1: Foundation
-- [ ] [Specific task — e.g., "Add Permissions field to User struct in models/user.go"]
-- [ ] [Specific task — e.g., "Create migration 003_add_permissions.sql"]
-- [ ] [Specific task — e.g., "Create services/permissions.go with CRUD methods"]
+- [ ] [Specific task] — implements [FR-NNN | US-NNN | GI-NNN]
+- [ ] [Specific task] — implements [FR-NNN]
 - **Verification:** `go build ./...` and `go test ./models/... ./services/...`
 - **Depends on:** nothing (foundation)
 
 ### Phase 2: Core
-- [ ] [Specific task — e.g., "Create handlers/permissions.go following handlers/users.go pattern"]
-- [ ] [Specific task — e.g., "Register routes in routes.go after existing /api/users routes"]
-- [ ] [Specific task — e.g., "Add permission middleware to protected routes"]
-- **Verification:** `go test ./handlers/... && curl -X POST localhost:8080/api/permissions`
+- [ ] [Specific task] — implements [US-NNN, FR-NNN]
+- [ ] [Specific task] — implements [FR-NNN]
+- **Verification:** `go test ./handlers/...`
 - **Depends on:** Phase 1
 
 ### Phase 3: Integration & Polish
-- [ ] [Specific task — e.g., "Update CreateUser to assign default permissions"]
-- [ ] [Specific task — e.g., "Add permission checks to existing admin endpoints"]
-- [ ] [Specific task — e.g., "Add integration tests for full permission flow"]
+- [ ] [Specific task] — implements [US-NNN]
+- [ ] [Specific task] — implements [OT-NNN verification]
 - **Verification:** `go test ./... -count=1` (full suite)
 - **Depends on:** Phase 2
 
@@ -944,13 +1050,23 @@ Each must be independently verifiable by reading code or running a test.
 
 Key files, functions, and patterns from the survey that inform this spec:
 
-| Reference | Why It Matters |
-|-----------|---------------|
-| `models/user.go:User` | Struct being extended with permissions |
-| `handlers/users.go:HandleCreateUser` | Pattern template for new handlers |
-| `services/users.go:UserService` | Pattern template for new service |
-| `middleware/auth.go:RequireAuth` | Where permission checks plug in |
-| `tests/integration/users_test.go` | Pattern template for integration tests |
+| Reference | Why It Matters | Source |
+|-----------|---------------|--------|
+| `models/user.go:User` | Struct being extended with permissions | [from survey/data.md] |
+| `handlers/users.go:HandleCreateUser` | Pattern template for new handlers | [from survey/surface.md] |
+| `services/users.go:UserService` | Pattern template for new service | [from survey/architecture.md] |
+| `middleware/auth.go:RequireAuth` | Where permission checks plug in | [from survey/architecture.md] |
+| `tests/integration/users_test.go` | Pattern template for integration tests | [from survey/architecture.md] |
+
+---
+
+## Appendix: Interview Transcript (v3.4.0 — EMBEDDED VERBATIM)
+
+> **This is the source of truth.** Every citation marker (`[from A-NNN]`, `[derived from A-NNN]`) in the spec above resolves to an answer block below. Foundry teammates, PROVE, TRACE, and human reviewers all read the spec and the transcript as one document — no separate file lookups, no broken references. If a cite in the body refers to an A-NNN that does not appear below, that is hallucination and R4 validation fails.
+
+*At R3 finalization, read `transcript.md` and paste its full body verbatim below this paragraph. Do not summarize, rephrase, or truncate. If the transcript is long, it is still embedded in full — downstream agents skim for the cited A-NNN they care about.*
+
+[Transcript content pasted here at finalization time]
 ```
 
 ### SPEC WRITING RULES
@@ -966,6 +1082,51 @@ Key files, functions, and patterns from the survey that inform this spec:
 9. Error handling must follow the project's existing pattern (reference specific examples)
 10. Do NOT use placeholder text — every example in the spec should be real and specific
 
+### VERBATIM-FIDELITY RULES (v3.4.0 — HARD CONSTRAINTS)
+
+These rules are non-negotiable. If any of them fails, the spec cannot be finalized — go back to the interview or fix the spec.
+
+**Core principle:** the transcript is the source of truth. The spec is an index over the transcript organized into structured sections foundry can consume. **Every bullet, every table row, every requirement, every Observable Truth, every file change, every phase task in the spec MUST be traceable to a transcript answer OR to a survey file.** Unsourced prose is forbidden.
+
+**Citation syntax:**
+- `[from A-NNN]` — direct; the item quotes or restates a single transcript answer
+- `[from A-NNN, A-NNN]` — direct synthesis of multiple answers
+- `[derived from A-NNN]` — Claude-worded item grounded in the user's answer (used for Flexible requirements, synthesized User Stories, etc.)
+- `[from survey/{file}.md]` — the item comes from codebase survey reality, not the interview
+- `[derived from A-NNN + survey/{file}.md]` — user decision combined with codebase reality
+- `[from reality.md Research Findings]` — item comes from R1.5 online research
+
+**Rules:**
+
+11. **Every Locked FR, NFR, AC, and GI MUST contain a double-quoted string that is a byte-identical substring of some A-NNN answer in `transcript.md`.** Not a paraphrase, not a close approximation, not "in other words" — the user's literal words inside quotes. If you cannot find a quotable answer for a requirement you believe is Locked, either (a) re-classify it as Flexible, or (b) ask the user the missing question before finalizing. Never invent the quote.
+
+12. **Every item in the spec MUST carry a citation marker** using the syntax above. This applies to:
+    - Problem Statement sentences
+    - Scope bullets (In Scope, Out of Scope)
+    - User Stories (each US gets a citation; each AC gets a citation)
+    - Codebase Integration lines
+    - Functional Requirements (Locked, Flexible, Informational)
+    - Non-Functional Requirements
+    - Observable Truths
+    - Technical Design decisions (Data Model, API Design, Architecture, Error Handling rows)
+    - File Change Map rows
+    - Implementation Phase tasks (cite the requirement they implement, which in turn cites the transcript)
+    - Codebase References
+    - Global Invariants (GI-NNN)
+    Items without citations are hallucination and MUST be removed or backed by a follow-up question. **Unsourced = doesn't exist.**
+
+13. **The `## Global Invariants` section MUST be populated from transcript answers tagged `[ARCH_INVARIANT]` during R2.** If no answers were tagged, write "None — the user gave no explicit placement constraints" explicitly. Do NOT generate plausible-sounding invariants; that is hallucination, and foundry decompose will propagate hallucinated constraints into every casting.
+
+14. **Claude's gloss is NEVER authoritative.** If you include a gloss after a quoted Locked item for reading convenience, it MUST be labeled "Claude's gloss (not authoritative)". The quote is the requirement; the gloss is navigation.
+
+15. **Survey citations are allowed for Technical Design and Codebase Integration only.** These sections describe codebase reality (the survey found it, not the user). Every other section must have a transcript citation — if a User Story or Observable Truth is citing only a survey file with no user input backing it, that's Claude deciding what the user wants based on what the codebase looks like. That's exactly the drift this rule exists to prevent. Reality tells you what's there; the user tells you what to build. Conflate them and you build things nobody asked for.
+
+16. **Survey-only citations on requirements are a red flag.** If a Locked or Flexible requirement cites `[from survey/...]` with no transcript answer, that's Claude inferring a requirement from the codebase rather than from the user. Treat as hallucination: either find a user answer or delete the requirement.
+
+17. **If the transcript is empty or has fewer than 3 Q/A pairs, the spec cannot be finalized.** An interview with zero captured answers cannot produce a Locked requirement or a properly-cited spec. Go back to R2.
+
+18. **The full `transcript.md` body MUST be embedded in the final spec as `## Appendix: Interview Transcript`**, pasted verbatim at finalization time. This makes the spec self-contained — downstream readers (foundry teammates, PROVE, TRACE, human reviewers) resolve every citation without opening another file. The appendix is not a summary; it is a byte-for-byte paste of the transcript file. If transcript.md is 10,000 lines, the appendix is 10,000 lines.
+
 SPEC_PROMPT_EOF
 
 # =========================================================================
@@ -976,7 +1137,7 @@ cat >> "$PROMPT_FILE" << 'VALIDATE_PROMPT_EOF'
 
 ## PHASE R4: VALIDATE — Self-Check Before Declaring Done
 
-After writing the spec, perform these validation checks:
+After writing the spec, perform these validation checks. **Any failure in the Verbatim-Fidelity Gate (v3.4.0) is a hard stop — you cannot finalize until it passes.**
 
 ### File Reference Check
 For every file path mentioned in the spec:
@@ -995,8 +1156,116 @@ For key function/type references:
 - Are there obvious feature gaps? (e.g., mentioned auth but no logout story)
 - Are error cases covered for every happy path?
 
+### Verbatim-Fidelity Gate (v3.4.0 — HARD STOP, DETERMINISTIC)
+
+**This gate is enforced by `validate-spec.py`, a deterministic Python script, not by your self-check. The script is authoritative — its exit code IS the gate. You do not get to decide "close enough."**
+
+**Procedure (authoritative):**
+
+1. Write the full spec (body + embedded appendix) to a draft path.
+2. Run:
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate-spec.py" <spec_path> <transcript_path>
+   ```
+3. Inspect the exit code:
+   - **Exit 0** → gate passed. Proceed to finalization.
+   - **Exit 1** → gate failed. The script printed a numbered list of failures with specific item IDs and reasons. Fix every failure, re-run the script, repeat until exit 0. Do NOT output `<promise>SPEC FORGED</promise>`, do NOT write the final spec file under its canonical name until exit 0.
+   - **Exit 2** → usage error (wrong arguments). Fix the invocation.
+4. If the script reports `UNCITED_ANSWERS` (coverage failure), every listed A-NNN must either be cited in the spec body (in any section — Informational is a fine home for context answers) or the answer must be removed from `transcript.md` because the user retracted it. You cannot silently drop interview content.
+5. If the script reports `NOT_VERBATIM` on a Locked item, the quote is wrong. Either fix the quote to byte-match the cited answer, or re-classify the item as Flexible (which removes the verbatim requirement).
+6. If the script reports `DANGLING_CITATION`, the cited A-NNN does not exist. This is hallucination — you invented a reference. Find the real answer or remove the item.
+7. If the script reports `SURVEY_ONLY_REQUIREMENT`, you wrote a requirement that the user never mentioned, backed only by what the codebase looks like. Find a user answer that supports it or delete it.
+
+**What the script checks (for your reference — the script's output is the final word, not this list):**
+
+- Transcript has ≥3 A-NNN answers (interview depth sanity)
+- Spec has `## Global Invariants` section
+- Spec has `## Appendix: Interview Transcript` section embedding the full transcript
+- Every Locked FR/NFR/AC/GI (under `### Locked` subsections or inside Global Invariants) has: a double-quoted substring, a `[from A-NNN]` citation, the citation resolves, the quote is byte-identical to the cited answer
+- Every line that has BOTH a quote AND a `[from A-NNN]` marker (anywhere in the spec) passes the verbatim check — catches AC bullets nested inside User Stories
+- Every bullet and non-header table row in these sections has a citation or requirement-ID marker: Problem Statement, Scope, User Stories, Functional Requirements, Non-Functional Requirements, Global Invariants, Technical Design, File Change Map, Observable Truths, Codebase References (Implementation Phases is exempt — it traces via `implements [FR-NNN]`)
+- Every A-NNN reference in the spec body resolves to a real answer in the transcript
+- No `[from Q-NNN]` (citations point at answers, not questions)
+- If the transcript has `[ARCH_INVARIANT]`-tagged answers, the Global Invariants section has ≥1 GI-NNN entry
+- No Locked/Flexible FR or NFR cites only a survey file with no user answer backing (survey-only = codebase-inferred = hallucination)
+- Every A-NNN in the transcript is cited at least once in the spec body (coverage — no interview content silently dropped)
+
+**Legacy self-check (still run, but non-authoritative):**
+
+Before calling the script, you may run through the manual checks below as a sanity pass. The script will catch anything you miss. **Do not skip the script even if your self-check passed.**
+
+1. **Read `transcript.md`.** Build an in-memory index of every A-NNN block and its verbatim text. Also collect the set of valid A-NNN IDs present in the file.
+
+2. **For every Locked requirement in the spec** (GI-NNN under Global Invariants, FR-NNN under Functional Requirements › Locked, NFR-NNN under Non-Functional Requirements › Locked, AC-NNN marked Locked):
+   - **Check L1 — has a quoted string:** The item MUST contain a double-quoted substring (matching `"..."`). If missing → FAIL: "Locked item {ID} has no verbatim quote. Either find the user's actual words in transcript.md and quote them, or re-classify as Flexible."
+   - **Check L2 — has a citation:** The item MUST contain a `[from A-NNN]` or `[from A-NNN, A-NNN]` marker. If missing → FAIL: "Locked item {ID} has no transcript citation."
+   - **Check L3 — citation resolves:** The cited A-NNN(s) MUST exist in transcript.md. If the citation points to an A-NNN that does not exist → FAIL: "Locked item {ID} cites A-NNN which is not in transcript.md. This is hallucination."
+   - **Check L4 — quote is verbatim:** The quoted substring MUST be a byte-identical substring of the cited A-NNN's body. Perform a string-contains check. If the quote is a paraphrase of the cited answer rather than a verbatim substring → FAIL: "Locked item {ID} quotes text that does not appear verbatim in A-NNN. Either fix the quote to match the transcript, or re-classify as Flexible."
+
+3. **UNIVERSAL CITATION CHECK — every bullet, row, and sentence in the spec body MUST have a citation marker.** This is the v3.4.0 extension that makes the spec an index over the transcript instead of a gloss.
+
+   Walk the spec body (everything above `## Appendix: Interview Transcript`) and scan section-by-section. For each of the sections below, the rule is: every list item (lines starting with `-` or `- [ ]`), every table row (excluding headers/separators), and every non-heading paragraph line MUST contain at least one of these markers:
+   - `[from A-NNN]` or `[from A-NNN, A-NNN, ...]`
+   - `[derived from A-NNN]` or `[derived from A-NNN, A-NNN, ...]`
+   - `[from survey/{file}.md]` — only valid for Technical Design, Codebase Integration, Codebase References, File Change Map
+   - `[derived from A-NNN + survey/{file}.md]`
+   - `[from reality.md ...]` — only valid for Informational items
+
+   **Sections subject to this check:**
+   - `## Problem Statement` — every sentence
+   - `## Scope` (In Scope, Out of Scope) — every bullet
+   - `## User Stories` — every US header line, every AC bullet, every Codebase Integration bullet
+   - `## Functional Requirements` — every FR bullet (Locked, Flexible, Informational)
+   - `## Non-Functional Requirements` — every NFR bullet
+   - `## Global Invariants` — every GI bullet (OR the literal "None — ..." sentinel)
+   - `## Technical Design` — every bullet under Data Model Changes, API Design, Architecture, Error Handling; every table row in New endpoints / Modified endpoints / Error cases
+   - `## File Change Map` — every table row
+   - `## Observable Truths` — every OT bullet
+   - `## Implementation Phases` — every phase task bullet (cites a requirement ID, which in turn cites the transcript)
+   - `## Codebase References` — every table row (survey citations allowed here)
+
+   **For each offending line** (a line that should have a citation but doesn't) → FAIL: "Unsourced bullet: '{line text}' in section '{section}'. Every item in the spec must cite its transcript or survey source. Unsourced prose = hallucination. Either add a citation, delete the line, or ask the user a follow-up question to ground it."
+
+   **Exceptions** (these do NOT need citations):
+   - Markdown headings (`#`, `##`, `###`)
+   - Table header rows and separator rows (`|---|---|`)
+   - Blockquote guidance lines the template itself ships (`> **Every bullet...`)
+   - Horizontal rules (`---`)
+   - Blank lines
+   - Phase verification commands (`- **Verification:** ...`) and phase dependency lines (`- **Depends on:** ...`) — these are scaffolding, not claims about user intent
+   - The literal sentinel "None — the user gave no explicit placement constraints." in Global Invariants
+
+4. **CITATION RESOLUTION CHECK — every A-NNN marker anywhere in the spec body MUST resolve to a real transcript answer.**
+
+   Scan the spec body for every `A-NNN` reference (inside any `[from ...]` or `[derived from ...]` marker). For each reference:
+   - If A-NNN does not exist in transcript.md → FAIL: "Dangling citation: spec references A-NNN at '{location}' but transcript.md has no such answer. This is hallucination."
+   - Exception: Q-NNN references (questions) are allowed in the transcript but NOT in spec citations — the spec cites answers, not questions. If you find a `[from Q-NNN]` marker → FAIL: "Spec cites a question (Q-NNN) instead of an answer (A-NNN). Change the citation to point at the answer."
+
+5. **SURVEY CITATIONS ON REQUIREMENTS — red-flag check.**
+
+   Walk the Locked and Flexible subsections of Functional Requirements and Non-Functional Requirements. If any FR or NFR has ONLY a `[from survey/...]` citation with no `[from A-NNN]` or `[derived from A-NNN]` companion → FAIL: "Requirement {ID} is sourced from the codebase survey but has no transcript answer backing it. This means Claude inferred a requirement from the codebase rather than from the user. Either find a transcript answer to cite, or delete the requirement. Reality describes what's there; the user says what to build."
+
+6. **For every Informational item:** Check it has a `[from A-NNN]` or `[from reality.md …]` citation. If missing → FAIL: "Informational item has no source citation."
+
+7. **Global Invariants section existence:**
+   - Section header `## Global Invariants` MUST exist in the spec. If missing → FAIL: "Global Invariants section missing — foundry decompose will have nothing to propagate to castings, and architectural-placement violations will slip through."
+   - Section content MUST be either (a) one or more GI-NNN entries with quotes + citations, OR (b) the literal sentence "None — the user gave no explicit placement constraints." If the section is empty, contains placeholder text, or contains invented (uncited) invariants → FAIL.
+   - If the transcript contains any answer tagged `[ARCH_INVARIANT]`, the Global Invariants section MUST contain at least one GI-NNN entry citing that answer. Empty invariants when the transcript has tagged answers → FAIL: "Transcript has ARCH_INVARIANT-tagged answers but Global Invariants section is empty. Extract them."
+
+8. **Transcript sanity:**
+   - `transcript.md` MUST exist and MUST contain at least 3 A-NNN blocks. If fewer → FAIL: "Interview too shallow to produce a properly-cited spec. Return to R2 and ask more questions."
+   - The `## Appendix: Interview Transcript` section MUST be present in the spec and MUST contain the full byte content of transcript.md (excluding the transcript file's own frontmatter, which is redundant with the section header). After writing, verify: `grep -c "^## A-" spec.md` ≥ the count in transcript.md. If the appendix is truncated or missing → FAIL: "Transcript appendix missing or incomplete. The spec must be self-contained."
+
+**On any FAIL:** print a report listing every failed check with the specific item ID and reason, then:
+- If the fix is "re-classify Locked → Flexible", make the change inline in the draft and re-run the gate.
+- If the fix requires new user input (the user never answered the question that would produce a Locked quote), return to R2 INTERVIEW and ask the missing question using AskUserQuestion. Append the new Q/A to transcript.md, then re-run the gate.
+- If the fix is "remove hallucinated invariant", delete the uncited entry and re-run the gate.
+- Do NOT finalize the spec with any Verbatim-Fidelity failures. Do NOT output `<promise>SPEC FORGED</promise>`.
+
+**Why these checks are HARD:** Soft validation ("try to quote when possible") will not hold against the pressure to finalize. Making these blocking is the only way to prevent the drift we've seen in prior runs, where an interview answer like "operator stays generic, agent handles per-node like IDM" became an Informational line, got dropped by foundry decompose's empty invariants, and produced a multi-cycle revert. The verbatim contract is the mechanism that keeps user intent load-bearing through every downstream agent.
+
 ### Report Issues
-If validation finds issues, fix them in the spec before finalizing.
+If any non-verbatim check (file refs, pattern refs, coverage) finds issues, fix them in the spec before finalizing. Non-verbatim issues are soft — use judgment. Verbatim issues are hard — block finalization.
 
 VALIDATE_PROMPT_EOF
 
@@ -1011,14 +1280,32 @@ cat >> "$PROMPT_FILE" << 'FINAL_PROMPT_EOF'
 When the user says "done", "finalize", "finished", or similar:
 
 ### SEQUENCE:
-1. Generate the full spec (PHASE R3 template above)
-2. Validate the spec (PHASE R4 checks above)
-3. Write final markdown spec to the spec path
-4. Write JSON spec to the JSON path
-5. Write progress file with all phases marked [PENDING]
-6. Delete the state file using Write with empty content
-7. Output `<promise>SPEC FORGED</promise>`
-8. STOP IMMEDIATELY
+1. **Read `transcript.md` in full.** You will need both its byte content (to paste into the Appendix) and its A-NNN index (to validate citations in step 3).
+2. Generate the full spec body (PHASE R3 template above) with complete citations on every bullet.
+3. **Append the Appendix.** After the `## Codebase References` section, append:
+   ```
+   ---
+
+   ## Appendix: Interview Transcript (v3.4.0 — EMBEDDED VERBATIM)
+
+   > This is the source of truth. Every citation marker in the spec above resolves to an answer block below.
+
+   ```
+   Then paste the full byte content of `transcript.md` — every Q-NNN and A-NNN block, the file header, everything. No truncation, no summary, no "[transcript continues]" ellipses. A byte-for-byte copy.
+4. Write the complete draft spec (body + appendix) to the spec path in a single Write call. (Use the canonical SPEC_PATH — the script needs a real file to validate.)
+5. **Run the deterministic R4 Verbatim-Fidelity Gate:**
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate-spec.py" <SPEC_PATH> <TRANSCRIPT_PATH>
+   ```
+   - Exit 0: proceed to step 6.
+   - Exit 1: read the printed failures, fix the spec (use Edit/Write on SPEC_PATH), re-run the script. Loop until exit 0. Do NOT proceed until the script exits 0. Do NOT output `<promise>SPEC FORGED</promise>` on exit 1.
+   - Exit 2: fix the invocation arguments.
+6. Write JSON spec to the JSON path.
+7. Write progress file with all phases marked [PENDING].
+8. Delete the state file using Write with empty content.
+9. **Do NOT delete `transcript.md`.** The embedded appendix is a copy; the standalone transcript.md remains as a working artifact. Downstream debugging and future re-spawns of forge (`/forge:resume`) depend on its continued existence.
+10. Output `<promise>SPEC FORGED</promise>`.
+11. STOP IMMEDIATELY.
 
 ### ALLOWED ACTIONS:
 - Read any files needed for validation
@@ -1073,6 +1360,7 @@ cat >> "$PROMPT_FILE" << SESSION_EOF
 - **Feature:** $FEATURE_NAME
 - **Feature Slug:** $FEATURE_SLUG
 - **Draft File:** $DRAFT_PATH (update this every 2-3 questions)
+- **Transcript File:** $TRANSCRIPT_PATH (append every Q/A verbatim, immediately after each answer — see R2 rule #8)
 - **Final Spec:** $SPEC_PATH (write here when user says done)
 - **JSON Spec:** $JSON_PATH (write here when user says done)
 - **Progress:** $PROGRESS_PATH (write here when user says done)
@@ -1148,6 +1436,7 @@ spec_path: "$SPEC_PATH"
 json_path: "$JSON_PATH"
 progress_path: "$PROGRESS_PATH"
 draft_path: "$DRAFT_PATH"
+transcript_path: "$TRANSCRIPT_PATH"
 state_path: "$STATE_PATH"
 survey_dir: "$SURVEY_DIR"
 reality_path: "$REALITY_PATH"
@@ -1274,12 +1563,24 @@ Forge plans. Foundry builds.
 
 DRAFT_EOF
 
+# Initialize transcript (v3.4.0 — verbatim Q/A record, source of truth for R3 SPEC)
+cat > "$TRANSCRIPT_PATH" << TRANSCRIPT_EOF
+# Interview Transcript: $FEATURE_NAME
+
+*Verbatim Q/A record. Append every question + answer immediately after AskUserQuestion returns. See R2 rule #8.*
+*Started: $TIMESTAMP*
+
+---
+
+TRANSCRIPT_EOF
+
 # Output setup message
 echo "Forge - Codebase-Aware Specification Engine"
 echo ""
 echo "Feature: $FEATURE_NAME"
 echo "State: $STATE_PATH"
 echo "Draft: $DRAFT_PATH"
+echo "Transcript: $TRANSCRIPT_PATH"
 echo "Output: $SPEC_PATH"
 echo "JSON: $JSON_PATH"
 echo "Survey: $SURVEY_DIR"

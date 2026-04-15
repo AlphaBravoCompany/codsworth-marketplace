@@ -40,15 +40,16 @@ Read the spec/scope and extract every declared:
 For the full verification-patterns library (stub patterns, wiring checks, substantiveness heuristics), consult:
 `@${CLAUDE_PLUGIN_ROOT}/references/verification-patterns.md`
 
-### 2. Three-Level Verification
+### 2. Four-Level Verification (v3.4.0 — adds Level 4 PLACED)
 
-For each declared symbol, apply ALL three verification levels. All must pass for verdict WIRED. Do NOT skip Level 2.
+For each declared symbol, apply ALL four verification levels. All must pass for verdict WIRED. Do NOT skip any level.
 
 | Level | Check | Pass = | Fail = |
 |-------|-------|--------|--------|
 | 1. EXISTS | Symbol/file present in codebase | Continue to Level 2 | MISSING |
 | 2. SUBSTANTIVE | Real implementation, not a stub | Continue to Level 3 | THIN |
-| 3. WIRED | Called/imported by other code from expected entry points | WIRED | UNWIRED |
+| 3. WIRED | Called/imported by other code from expected entry points | Continue to Level 4 | UNWIRED |
+| 4. PLACED | Symbol's file path satisfies every applicable `<global_invariants>` entry | WIRED | MISPLACED |
 
 **Level 1: EXISTS**
 - `find_symbol(name_path, include_body: false)` — does it exist?
@@ -70,7 +71,24 @@ For each declared symbol, apply ALL three verification levels. All must pass for
 - `get_symbols_overview(file)` — are all expected exports present?
 - Record all callers with file paths and line numbers
 - If no callers from expected entry points → verdict UNWIRED
-- If called from expected entry points → verdict WIRED
+- If called from expected entry points → continue to Level 4
+
+**Level 4: PLACED** (v3.4.0 — architectural placement check)
+- Read the `<global_invariants>` block from the casting prompt (passed to you in the spec/scope input).
+- **Short-circuit:** if the invariants block is empty, or starts with "None —", skip this level and treat the symbol as PLACED. No invariants = no placement rules to enforce.
+- Otherwise, parse `GI-NNN` entries under `### Architectural Placement` (or treat each bullet as an implicit invariant if the older flat-list format is used). For each invariant, extract:
+  - The quoted user text
+  - The "Applies to:" layer/directory list
+  - The "Violation looks like:" anti-pattern
+- For each symbol you've just verified at Level 3, check its file path against every applicable invariant:
+  - Does the symbol live in a directory the invariants forbid? (e.g., invariant says "operator stays generic — per-node rendering happens in the agent" and the symbol is in `operator/cloudinit.go`)
+  - Does it live in a directory the invariants explicitly authorize? (e.g., the invariant's "Applies to:" line names `agent/reconciler/` as the correct layer)
+- If the symbol violates an invariant → verdict MISPLACED. Record:
+  - The violated invariant (GI-NNN + quoted text)
+  - Current file path
+  - Where the invariant says it should live
+- If the symbol satisfies every applicable invariant → verdict WIRED (placement check passed).
+- **MISPLACED is a defect,** same severity as MISSING or UNWIRED. Goes in the `defects` array with `type: "ARCHITECTURAL_PLACEMENT"`. Fixing it typically means moving the code, not editing it in place.
 
 ### 3. Trace Call Chains
 
@@ -95,11 +113,12 @@ If previous trace results are provided, compare:
 
 | Verdict   | Meaning                                              |
 |-----------|------------------------------------------------------|
-| WIRED     | Exists, called from expected entry points, body matches spec |
+| WIRED     | Exists, substantive, called from expected entry points, AND lives in a layer authorized by every applicable `<global_invariants>` entry |
 | THIN      | Exists and called, but implementation is incomplete   |
 | UNWIRED   | Exists but not called from expected entry points      |
 | MISSING   | Not found in codebase                                 |
 | WRONG     | Exists but implementation contradicts the spec        |
+| MISPLACED | (v3.4.0) Exists, substantive, wired — but lives in a directory/layer a `GI-NNN` invariant forbids. See Level 4 PLACED. |
 
 ## Output Format
 
@@ -107,7 +126,7 @@ If previous trace results are provided, compare:
 {
   "cycle": 1,
   "symbols_checked": 42,
-  "summary": { "WIRED": 35, "THIN": 3, "UNWIRED": 1, "MISSING": 2, "WRONG": 1 },
+  "summary": { "WIRED": 34, "THIN": 3, "UNWIRED": 1, "MISSING": 2, "WRONG": 1, "MISPLACED": 1 },
   "results": [
     {
       "symbol": "CreateUser",
