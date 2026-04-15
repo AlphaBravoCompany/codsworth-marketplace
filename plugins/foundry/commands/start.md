@@ -112,7 +112,7 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
 
 ### F0.9: VALIDATE
 
-Call `Foundry-Validate-Castings` — runs 9 dimensions:
+Call `Foundry-Validate-Castings` — runs 10 dimensions:
 
 1. Requirement Coverage (every spec req ID in some casting)
 2. Casting Completeness (must_haves populated)
@@ -123,6 +123,7 @@ Call `Foundry-Validate-Castings` — runs 9 dimensions:
 7. **Prompt Fidelity** (v3.0.0, extended v3.3.0) — every prompt has `<spec_requirements>` (char-for-char from spec), no forbidden phrases, sub-check 7e verifies `<global_invariants>` propagation, sub-check 7g verifies `<mandatory_rules>` propagation
 8. **Migration Coverage** (v3.1.0) — MIGRATION specs only; 1:1 coverage_list
 9. **Spec Structure** (v3.3.0) — spec has tagged req IDs (error); spec has `## Global Invariants` section (warning)
+10. **File Change Map ↔ key_files cross-check** (v3.4.1) — every file in spec's `## File Change Map` must appear in exactly one casting's key_files (error if orphaned — the change is unimplementable). Files in key_files but not in the map are flagged as scope creep (warning). Skipped if the spec has no File Change Map section.
 
 **Revision loop:** auto-revise on failures (max 3 iterations), then proceed with warnings.
 

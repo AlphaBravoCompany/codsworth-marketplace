@@ -687,6 +687,116 @@ def foundry_validate_castings(
         "warnings": len(dim9_warnings),
     }
 
+    # ── Dimension 10: File Change Map ↔ key_files cross-check (v3.4.1) ──
+    #
+    # The spec's `## File Change Map` section enumerates every file that
+    # should be modified or created. Every casting declares its `key_files`
+    # boundary — the files the teammate is allowed to touch. These two MUST
+    # cross-check:
+    #
+    #   - Every file in the File Change Map MUST appear in exactly one
+    #     casting's key_files (else the change is unimplementable — no
+    #     teammate can reach it). ERROR.
+    #   - Files in some casting's key_files but NOT in the File Change Map
+    #     are flagged as scope creep (warning) — the teammate has access to
+    #     a file the spec didn't authorize them to change.
+    #
+    # The check is skipped if the spec has no File Change Map section (older
+    # specs or pure-doc specs). Forge v3.4.0+ always emits one.
+    dim10_issues = []
+    map_files = _extract_file_change_map_files(spec_text)
+
+    if not map_files:
+        dimensions["file_change_map_coverage"] = {
+            "ok": True,
+            "issues": [],
+            "active": False,
+            "reason": "spec has no File Change Map section (or none parseable)",
+        }
+    else:
+        # Build {file: [casting_ids]} from key_files (already normalized
+        # via _normalize_file_path so map_files and key_files compare
+        # apples-to-apples).
+        casting_files: dict[str, list] = {}
+        for c in castings:
+            cid = c.get("id", "?")
+            for kf in c.get("key_files", []):
+                normalized = _normalize_file_path(kf)
+                if normalized:
+                    casting_files.setdefault(normalized, []).append(cid)
+
+        # Check 10a: every File Change Map entry is in some casting
+        unimplementable = sorted(map_files - set(casting_files.keys()))
+        for path in unimplementable:
+            dim10_issues.append({
+                "severity": "error",
+                "issue": "file_change_map_orphan",
+                "file": path,
+                "detail": (
+                    f"spec.md File Change Map declares '{path}' must change, "
+                    f"but no casting has it in key_files. No teammate will "
+                    f"reach this file — the change is unimplementable as "
+                    f"sliced. Either add '{path}' to a casting's key_files, "
+                    f"or remove it from the File Change Map if it shouldn't "
+                    f"actually change."
+                ),
+            })
+        if unimplementable:
+            issues.append({
+                "dimension": "file_change_map_coverage",
+                "severity": "error",
+                "message": (
+                    f"{len(unimplementable)} file(s) in spec's File Change "
+                    f"Map are not in any casting's key_files (unimplementable)"
+                ),
+            })
+            revision_hints.append(
+                f"Decompose missed {len(unimplementable)} files from the "
+                f"File Change Map. Either widen a casting's key_files to "
+                f"include them, add a new casting that owns them, or remove "
+                f"them from the File Change Map. First 5: "
+                f"{unimplementable[:5]}"
+            )
+
+        # Check 10b: scope creep — castings have files not in the map
+        # (warning, not error — sometimes castings legitimately touch
+        # adjacent files like test fixtures or import sites)
+        scope_creep = sorted(set(casting_files.keys()) - map_files)
+        for path in scope_creep[:20]:  # cap to avoid noise
+            cids = casting_files[path]
+            dim10_issues.append({
+                "severity": "warning",
+                "issue": "file_change_map_scope_creep",
+                "file": path,
+                "castings": cids,
+                "detail": (
+                    f"casting(s) {cids} declare '{path}' in key_files but "
+                    f"the spec's File Change Map does not list it. Either "
+                    f"the spec is incomplete (add the file to the map and "
+                    f"explain why it changes) or the casting is overreaching "
+                    f"(remove from key_files)."
+                ),
+            })
+        if scope_creep:
+            issues.append({
+                "dimension": "file_change_map_coverage",
+                "severity": "warning",
+                "message": (
+                    f"{len(scope_creep)} file(s) are in casting key_files "
+                    f"but not in spec's File Change Map (potential scope creep)"
+                ),
+            })
+
+        dim10_errors = [i for i in dim10_issues if i.get("severity") == "error"]
+        dimensions["file_change_map_coverage"] = {
+            "ok": len(dim10_errors) == 0,
+            "issues": dim10_issues,
+            "active": True,
+            "map_files": len(map_files),
+            "covered": len(map_files - set(casting_files.keys())),
+            "scope_creep": len(scope_creep),
+        }
+
     # ── Overall result ──
     # Fail on errors, warn on warnings
     error_count = sum(1 for i in issues if i.get("severity") == "error")
@@ -827,6 +937,101 @@ def _extract_mandatory_rules_block(prompt_text: str) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def _extract_file_change_map_files(spec_text: str) -> set[str]:
+    """Extract every file path declared in the spec's `## File Change Map`
+    section. Returns a set of normalized file paths (no backticks, no line
+    refs, no leading slashes). Empty set if the section is missing or
+    contains no parseable file rows.
+
+    Recognizes two layouts:
+      1. Markdown tables (most common — forge v3.4.0 template uses these)
+         | File | What Changes | ... |
+         | `models/user.go` | Add field | ... |
+      2. Bullet lists (some specs use these instead of tables)
+         - `models/user.go` — Add field [from A-NNN]
+
+    File paths are normalized:
+      - Stripped of surrounding backticks
+      - Stripped of `:N` line refs (e.g. `foo.go:145` → `foo.go`)
+      - Stripped of leading `./` or `/`
+      - Trailing whitespace removed
+    """
+    if not spec_text:
+        return set()
+    section_match = re.search(
+        r"^\s*##\s+File\s+Change\s+Map\s*\n(.*?)(?=^\s*##\s+|\Z)",
+        spec_text,
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    if not section_match:
+        return set()
+    section = section_match.group(1)
+    files: set[str] = set()
+    for raw_line in section.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Skip section sub-headings (### Modified Files / ### New Files)
+        if line.startswith("#"):
+            continue
+        # Skip blockquote guidance lines
+        if line.startswith(">"):
+            continue
+        # Table row — extract first cell
+        if line.startswith("|"):
+            # Skip separator rows like |---|---|
+            inner = line.strip("|").replace(" ", "")
+            if inner and set(inner) <= set("-:|"):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if not cells:
+                continue
+            first = cells[0]
+            # Skip header rows: first cell is literally "File"
+            if first.lower() in ("file", "path", "filename"):
+                continue
+            candidate = first
+        # Bullet row — strip marker, take text up to first delimiter
+        elif re.match(r"^[-*]\s+", line):
+            content = re.sub(r"^[-*]\s+", "", line)
+            # Take text up to first delimiter we recognize as "end of path"
+            candidate = re.split(r"\s+(?:—|--|–|-|:|\(|\[)", content, 1)[0]
+        else:
+            continue
+        # Normalize the candidate path
+        path = _normalize_file_path(candidate)
+        if path:
+            files.add(path)
+    return files
+
+
+def _normalize_file_path(raw: str) -> str:
+    """Strip backticks, line refs, leading ./, trailing whitespace.
+    Returns empty string for non-paths (URLs, plain prose, etc.)."""
+    s = raw.strip()
+    # Strip backticks
+    s = s.strip("`").strip()
+    # Strip surrounding markdown link syntax [text](url) — keep the text
+    link_match = re.match(r"^\[([^\]]+)\]\([^)]*\)$", s)
+    if link_match:
+        s = link_match.group(1).strip("`").strip()
+    # Strip line refs: foo.go:145, foo.go:145-200
+    s = re.sub(r":\d+(?:-\d+)?$", "", s)
+    # Strip leading ./
+    if s.startswith("./"):
+        s = s[2:]
+    # Strip leading / (treat as relative path)
+    s = s.lstrip("/")
+    # Reject obvious non-paths
+    if not s or "/" not in s and "." not in s:
+        return ""
+    if " " in s:
+        return ""
+    if s.startswith(("http://", "https://")):
+        return ""
+    return s
 
 
 def _extract_spec_invariants_section(spec_text: str) -> str:
