@@ -43,7 +43,7 @@ from foundry_mcp.tools.foundry_handoff import (
     foundry_handoff,
     foundry_spec_hash,
 )
-from foundry_mcp.tools.foundry_spawn import foundry_spawn_teammate
+from foundry_mcp.tools.foundry_spawn import foundry_cast_wave, foundry_spawn_teammate
 from foundry_mcp.tools.foundry_validate import foundry_validate_castings
 from foundry_mcp.tools.validation import validate_report
 
@@ -262,13 +262,34 @@ async def list_tools() -> list[Tool]:
                 "Read the pre-authored teammate prompt for a casting and return it verbatim. "
                 "The lead MUST pass the returned `prompt` field directly to the Agent tool without "
                 "modification. Authored at F0.5 DECOMPOSE from the spec, validated at F0.9, frozen. "
-                "This is the v3.0.0 architecture: plans are prompts, lead is a router not an interpreter."
+                "This is the v3.0.0 architecture: plans are prompts, lead is a router not an interpreter. "
+                "Prefer Foundry-Cast-Wave for wave-level bulk fetch (v3.5.0) — single casting lookups "
+                "are for GRIND or one-off re-dispatches."
             ),
             inputSchema={
                 "type": "object",
                 "required": ["casting_id"],
                 "properties": {
                     "casting_id": {"type": ["integer", "string"], "description": "Casting id from manifest.json."},
+                    "phase": {"type": "string", "enum": ["cast", "grind"], "default": "cast"},
+                },
+            },
+        ),
+        Tool(
+            name="Foundry-Cast-Wave",
+            description=(
+                "Bulk-fetch prompts for every casting in a wave as a single MCP call (v3.5.0). "
+                "Replaces N sequential Foundry-Spawn-Teammate roundtrips for a CAST wave. "
+                "Returns {castings: [{casting_id, prompt, prompt_hash}, ...], team_name_suggestion, "
+                "instructions}. Lead then does TeamCreate + Foundry-Team-Up + a SINGLE parallel Agent "
+                "tool-use message with one Agent per casting. Preserves audit trail — every casting "
+                "is still logged to spawns.log with bulk=true."
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["wave"],
+                "properties": {
+                    "wave": {"type": "integer", "description": "1-indexed wave number from manifest.waves."},
                     "phase": {"type": "string", "enum": ["cast", "grind"], "default": "cast"},
                 },
             },
@@ -452,6 +473,8 @@ _DISPATCH = {
     "Foundry-Validate-Castings": lambda args: foundry_validate_castings(project_root=_project_root),
     "Foundry-Spawn-Teammate": lambda args: foundry_spawn_teammate(
         casting_id=args["casting_id"], phase=args.get("phase", "cast"), project_root=_project_root),
+    "Foundry-Cast-Wave": lambda args: foundry_cast_wave(
+        wave=args["wave"], phase=args.get("phase", "cast"), project_root=_project_root),
     "Foundry-Spec-Hash": lambda args: foundry_spec_hash(project_root=_project_root),
     "Foundry-Handoff": lambda args: foundry_handoff(
         event=args["event"], source=args.get("source", ""), destination=args.get("destination", ""),

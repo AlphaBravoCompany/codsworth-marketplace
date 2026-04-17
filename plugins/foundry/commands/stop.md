@@ -27,10 +27,9 @@ Use AskUserQuestion:
 ## STEP 3: EXECUTE STOP
 
 ### Stop after current task:
-1. Send "All work complete, stop working." to all teammates
-2. Wait for them to finish
-3. `TeamDelete` + `Foundry-Team-Down`
-4. Save state (run can be resumed later)
+1. Send "All work complete, stop working." to each teammate in ONE parallel SendMessage batch (no broadcast — structured messages reject `to='*'`)
+2. `TeamDelete` + `Foundry-Team-Down` **immediately** — do NOT wait for shutdown_response/ack or idle confirmations. Idle/terminated panes are the signal; `TeamDelete` cleans zombies.
+3. Save state (run can be resumed later)
 
 ### Stop immediately:
 1. `TeamDelete` + `Foundry-Team-Down` (kills tmux panes)

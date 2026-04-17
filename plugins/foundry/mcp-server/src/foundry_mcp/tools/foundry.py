@@ -201,14 +201,21 @@ def foundry_init(
 
     # state.json — always fresh
     state_path = fdir / "state.json"
+    _init_now = datetime.now(timezone.utc).isoformat()
     state = {
         "phase": "F0",
         "cycle": 0,
         "spec_path": spec_path or "",
         "temper": temper,
         "no_ui": no_ui,
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "phase_times": {},
+        "started_at": _init_now,
+        "phase_times": {
+            # Stamp F0 start so sub-phase timing (F0 / F0.5 / F0.9) works
+            # automatically; passive stamping in foundry_next_action closes
+            # F0 when manifest.json appears, closes F0.5 on .validate-passed,
+            # and closes F0.9 on Foundry-Phase(start_cast).
+            "F0": {"started_at": _init_now},
+        },
     }
     _save_json(state_path, state)
     files_created.append("state.json")

@@ -6,11 +6,68 @@ A 5-minute validation saves hours of GRIND cycles.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from foundry_mcp.tools.foundry_state import get_run_dir
+
+
+def _fingerprint_inputs(fdir: Path, manifest: dict) -> dict:
+    """Hash the inputs that validator dimensions depend on.
+
+    Returns {spec_hash, manifest_hash, castings: {id: {prompt_hash, manifest_entry_hash}}}.
+    Any change in these hashes invalidates the cached validation result
+    for the affected casting (or all castings when spec/manifest-level
+    inputs change).
+    """
+    spec_path = fdir / "spec.md"
+    spec_bytes = spec_path.read_bytes() if spec_path.exists() else b""
+    spec_hash = hashlib.sha256(spec_bytes).hexdigest()[:16]
+
+    shared_fields = {
+        "spec_type": manifest.get("spec_type"),
+        "migration_source_root": manifest.get("migration_source_root"),
+        "migration_destination_root": manifest.get("migration_destination_root"),
+        "file_change_map": manifest.get("file_change_map"),
+    }
+    manifest_hash = hashlib.sha256(
+        json.dumps(shared_fields, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+    castings_fp: dict[str, dict] = {}
+    for c in manifest.get("castings", []):
+        cid = str(c.get("id"))
+        prompt_path = fdir / "castings" / f"casting-{cid}-prompt.md"
+        prompt_bytes = prompt_path.read_bytes() if prompt_path.exists() else b""
+        entry_bytes = json.dumps(c, sort_keys=True).encode("utf-8")
+        castings_fp[cid] = {
+            "prompt_hash": hashlib.sha256(prompt_bytes).hexdigest()[:16],
+            "manifest_entry_hash": hashlib.sha256(entry_bytes).hexdigest()[:16],
+        }
+
+    return {"spec_hash": spec_hash, "manifest_hash": manifest_hash, "castings": castings_fp}
+
+
+def _load_validate_cache(fdir: Path) -> dict:
+    cache_path = fdir / ".validate-cache.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_validate_cache(fdir: Path, cache: dict) -> None:
+    try:
+        (fdir / ".validate-cache.json").write_text(
+            json.dumps(cache, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def foundry_validate_castings(
@@ -50,6 +107,22 @@ def foundry_validate_castings(
 
     if not castings:
         return {"passed": False, "error": "No castings in manifest"}
+
+    # Short-circuit: if everything is byte-identical to the last passing
+    # run and the prior verdict was pass, return cached result instead of
+    # re-running all 10 dimensions. Reject→fix→revalidate loops fix only
+    # a subset of castings per iteration; when the lead accidentally
+    # re-calls Foundry-Validate-Castings without any code change (happens
+    # on retry paths), the cache short-circuits to near-zero cost.
+    _started_wall = datetime.now(timezone.utc)
+    fingerprints = _fingerprint_inputs(fdir, manifest)
+    cache = _load_validate_cache(fdir)
+    cached_result = cache.get("last_pass")
+    if cached_result and cached_result.get("fingerprints") == fingerprints:
+        return {
+            **cached_result["result"],
+            "cache": {"hit": True, "cached_at": cached_result.get("cached_at")},
+        }
 
     # Load spec to extract requirements
     spec_path = fdir / "spec.md"
@@ -802,7 +875,8 @@ def foundry_validate_castings(
     error_count = sum(1 for i in issues if i.get("severity") == "error")
     passed = error_count == 0
 
-    return {
+    elapsed_ms = int((datetime.now(timezone.utc) - _started_wall).total_seconds() * 1000)
+    result_payload = {
         "passed": passed,
         "dimensions": dimensions,
         "issues": issues,
@@ -813,8 +887,29 @@ def foundry_validate_castings(
             "covered_requirements": len(covered_reqs),
             "error_count": error_count,
             "warning_count": len(issues) - error_count,
+            "elapsed_ms": elapsed_ms,
         },
     }
+
+    # Pass-marker lets foundry_next_action stamp F0.9 VALIDATE end time;
+    # invalidated on fail so the marker only reflects the latest verdict.
+    pass_marker = fdir / ".validate-passed"
+    if passed:
+        pass_marker.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+        _save_validate_cache(
+            fdir,
+            {
+                "last_pass": {
+                    "fingerprints": fingerprints,
+                    "result": result_payload,
+                    "cached_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+    else:
+        pass_marker.unlink(missing_ok=True)
+
+    return {**result_payload, "cache": {"hit": False}}
 
 
 # ── Helpers for Dimension 7: Prompt Fidelity ──────────────────────────

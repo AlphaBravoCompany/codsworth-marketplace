@@ -134,9 +134,10 @@ Call `Foundry-Gate(phase='cast')`.
 **Router, not interpreter.** Decompose already wrote every teammate prompt. Your job is scheduling + team lifecycle.
 
 1. Determine wave from `manifest.json` dependency graph. Max 5 teammates per wave.
-2. `TeamCreate("foundry-cast-wave-N")` → `Foundry-Team-Up`
-3. For each casting: `Foundry-Spawn-Teammate(casting_id=N, phase="cast")` → spawn Agent with `model=opus`, `subagent_type=general-purpose`, `prompt=<returned prompt VERBATIM>`. No modification of any kind.
-4. Wait for completion → `TeamDelete` → `Foundry-Team-Down`
+2. `TeamCreate("foundry-{run}-cast-wave-N")` → `Foundry-Team-Up` (substitute `{run}` with the active run slug from `Foundry-Next`)
+3. `Foundry-Cast-Wave(wave=N, phase="cast")` — single bulk call returns prompts for every casting in the wave (v3.5.0). Then, in **ONE message**, spawn parallel Agent tool calls (one per returned casting) with `model=opus`, `subagent_type=general-purpose`, `prompt=<that casting's prompt VERBATIM>`. No modification. Do NOT serialize into separate messages — that's what the bulk tool + parallel tool use exists to avoid.
+   - GRIND phase or single re-dispatch: fall back to per-casting `Foundry-Spawn-Teammate(casting_id=N, phase="cast"|"grind")`.
+4. Wait for teammates to finish their **work** (report "complete" or task list empty). Then send shutdown in ONE parallel SendMessage batch and **immediately** `TeamDelete` + `Foundry-Team-Down` — do NOT wait for shutdown_response/ack/idle confirmations. Idle panes are the signal; `TeamDelete` kills zombies.
 5. Build + test → commit → advance to next wave
 6. After all waves: review `concerns.md`. Any concern that relaxes the spec is a decompose failure — re-run F0.5.
 7. Call `Foundry-Gate(phase='inspect')`.
@@ -167,7 +168,7 @@ Zero defects → `Foundry-Phase("inspect_clean")` → F4. Defects → `Foundry-P
 Same router principle as F1. Lead does NOT draft GRIND prompts.
 
 1. `Foundry-Tasks` — convert defects to per-casting task groups.
-2. `TeamCreate("foundry-grind-N")` → `Foundry-Team-Up`
+2. `TeamCreate("foundry-{run}-grind-N")` → `Foundry-Team-Up` (substitute `{run}` with the active run slug)
 3. Per casting with open defects: `Foundry-Spawn-Teammate(casting_id=N, phase="grind")` → spawn Agent (opus) with returned prompt verbatim, APPEND a separate `## Defects to fix this cycle:` block below (the ONLY thing lead may append).
 4. Max 3 teammates per GRIND cycle.
 5. Shut down → build + test → commit → back to F2 INSPECT.

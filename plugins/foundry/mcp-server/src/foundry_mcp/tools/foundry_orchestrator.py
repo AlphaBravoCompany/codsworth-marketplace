@@ -381,6 +381,31 @@ def foundry_mark_stream(
         encoding="utf-8",
     )
 
+    # TRACE skip-gate anchor (v3.5.0): when TRACE passes with zero findings,
+    # stamp the current HEAD SHA. Future F2 entries can compare HEAD vs this
+    # SHA restricted to manifest key_files — if no overlap, skip TRACE.
+    # Deterministic, verbatim the same as re-running LSP: topology unchanged.
+    if stream == "trace" and findings_count == 0:
+        import subprocess
+        try:
+            rev = subprocess.run(
+                ["git", "-C", project_root, "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if rev.returncode == 0 and rev.stdout.strip():
+                import json as _json
+                (fdir / ".trace-clean-at").write_text(
+                    _json.dumps({
+                        "head_sha": rev.stdout.strip(),
+                        "stamped_at": _now(),
+                        "cycle": cycle,
+                        "items_checked": items_checked,
+                    }),
+                    encoding="utf-8",
+                )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
     result: dict = {
         "ok": True,
         "stream": stream,
@@ -394,6 +419,99 @@ def foundry_mark_stream(
         result["warning"] = coverage_warning
 
     return result
+
+
+def _trace_skip_check(fdir: Path, project_root: str) -> dict:
+    """Decide whether the current F2 INSPECT can skip the TRACE stream.
+
+    Rationale: TRACE is LSP-heavy (EXISTS / SUBSTANTIVE / WIRED / PLACED
+    across every manifest symbol). A cycle of TRACE routinely runs 100+
+    Serena IPC calls over several minutes. Topology is a pure function of
+    the code on disk — if no file owning a manifest symbol has changed
+    since the last clean TRACE, the verdicts are provably identical.
+
+    Returns {skip: bool, reason: str, details?: {...}}.
+    """
+    marker = fdir / ".trace-clean-at"
+    if not marker.exists():
+        return {"skip": False, "reason": "no prior clean TRACE to compare against"}
+    try:
+        marker_data = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"skip": False, "reason": "unreadable .trace-clean-at marker"}
+    clean_sha = marker_data.get("head_sha", "")
+    if not clean_sha:
+        return {"skip": False, "reason": "no head_sha recorded"}
+
+    manifest = _load_json(fdir / "castings" / "manifest.json")
+    key_files: set[str] = set()
+    for c in manifest.get("castings", []):
+        for f in (c.get("key_files") or []):
+            if isinstance(f, str) and f.strip():
+                key_files.add(f.strip())
+    if not key_files:
+        return {"skip": False, "reason": "no key_files declared in manifest — cannot scope diff"}
+
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "-C", project_root, "diff", "--name-only", clean_sha, "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {"skip": False, "reason": "git unavailable"}
+    if result.returncode != 0:
+        return {"skip": False, "reason": f"git diff failed: {result.stderr.strip()[:120]}"}
+
+    changed_files = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    overlap = changed_files & key_files
+    if overlap:
+        return {
+            "skip": False,
+            "reason": f"{len(overlap)} manifest key_file(s) changed since {clean_sha[:8]}",
+            "details": {"changed_keyfiles": sorted(overlap)[:10]},
+        }
+    return {
+        "skip": True,
+        "reason": f"no manifest key_files changed since clean TRACE at {clean_sha[:8]}",
+        "details": {
+            "clean_sha": clean_sha,
+            "total_changed": len(changed_files),
+            "manifest_key_files": len(key_files),
+        },
+    }
+
+
+def _maybe_skip_trace(fdir: Path, project_root: str) -> dict | None:
+    """If the TRACE skip gate fires, auto-stamp .trace-complete as skipped.
+
+    Called from foundry_next_action so the decision is made deterministically
+    before any stream dispatching instructions go out. No-op when TRACE is
+    already complete or skip preconditions aren't met.
+    """
+    if not fdir or not fdir.exists():
+        return None
+    if (fdir / ".trace-complete").exists():
+        return None
+    state = _load_json(fdir / "state.json")
+    if state.get("phase") != "F2":
+        return None
+
+    decision = _trace_skip_check(fdir, project_root)
+    if not decision.get("skip"):
+        return decision
+
+    (fdir / ".trace-complete").write_text(
+        f"{_now()} cycle=skipped\n"
+        f"items_checked=0\n"
+        f"items_total=0\n"
+        f"coverage=SKIPPED\n"
+        f"findings=0\n"
+        f"skipped=true\n"
+        f"reason={decision['reason']}\n",
+        encoding="utf-8",
+    )
+    return decision
 
 
 def _check_streams_complete(project_root: str) -> dict:
@@ -430,25 +548,37 @@ def _check_streams_complete(project_root: str) -> dict:
 # --- Phase lifecycle markers ---
 
 
-def _update_phase(fdir: Path, new_phase: str) -> None:
-    """Update state.json with the new phase. Tracks timing per phase."""
-    state_path = fdir / "state.json"
-    state = _load_json(state_path)
-    now = _now()
-
-    prev_phase = state.get("phase", "")
-    phase_times = state.get("phase_times", {})
-    if prev_phase and prev_phase in phase_times:
-        phase_times[prev_phase]["ended_at"] = now
+def _finalize_open_phase_entry(entry: dict, now: str) -> None:
+    """If `entry` has started_at but no ended_at, stamp ended_at + duration."""
+    if "started_at" in entry and "ended_at" not in entry:
+        entry["ended_at"] = now
         try:
-            start = datetime.fromisoformat(phase_times[prev_phase]["started_at"])
+            start = datetime.fromisoformat(entry["started_at"])
             end = datetime.fromisoformat(now)
             delta = end - start
             mins = int(delta.total_seconds() // 60)
             secs = int(delta.total_seconds() % 60)
-            phase_times[prev_phase]["duration"] = f"{mins}m {secs}s"
+            entry["duration"] = f"{mins}m {secs}s"
         except (ValueError, KeyError):
             pass
+
+
+def _update_phase(fdir: Path, new_phase: str) -> None:
+    """Update state.json with the new phase. Tracks timing per phase.
+
+    Closes EVERY still-open phase_times entry before opening the new one.
+    Passive sub-phase stamping (see _stamp_subphase_transitions) opens
+    F0.5/F0.9 based on file-state signals, so a single `prev_phase` close
+    isn't sufficient — the F0 → F1 jump skips F0.5/F0.9 at the state-level
+    even though those sub-phases did elapse in wall time.
+    """
+    state_path = fdir / "state.json"
+    state = _load_json(state_path)
+    now = _now()
+
+    phase_times = state.get("phase_times", {})
+    for entry in phase_times.values():
+        _finalize_open_phase_entry(entry, now)
 
     phase_times[new_phase] = {"started_at": now}
 
@@ -504,6 +634,21 @@ def foundry_mark_phase_complete(
             return {"error": f"Cannot mark CAST complete \u2014 active teams: {', '.join(teams['teams'])}",
                     "hint": "Shut down all teammates and TeamDelete before marking CAST complete"}
         (fdir / ".cast-complete").write_text(f"{_now()}\n", encoding="utf-8")
+        # v3.5.0: stamp the CAST baseline HEAD SHA so GRIND cycles can show
+        # teammates what has changed since CAST ended. Used by
+        # foundry_spawn_teammate(phase='grind') to build a cycle-context
+        # block the lead appends to the GRIND prompt, saving the teammate
+        # redundant re-exploration of files that earlier cycles already touched.
+        import subprocess as _sp
+        try:
+            _rev = _sp.run(
+                ["git", "-C", project_root, "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if _rev.returncode == 0 and _rev.stdout.strip():
+                (fdir / ".cast-baseline-sha").write_text(_rev.stdout.strip(), encoding="utf-8")
+        except (FileNotFoundError, _sp.TimeoutExpired, OSError):
+            pass
         _update_phase(fdir, "F2")
         return {"ok": True, "phase": "F2", "message": "CAST complete \u2192 phase is now F2 (INSPECT)"}
 
@@ -729,8 +874,9 @@ def _check_active_teams(project_root: str) -> dict:
     if live_panes and not active:
         result["hint"] = (
             f"{len(live_panes)} teammate pane(s) still running: {', '.join(live_panes)}. "
-            "Send 'All work complete, stop working.' to each teammate and wait for them to exit. "
-            "If they won't stop, run: tmux kill-pane -t <pane_id>"
+            "Send 'All work complete, stop working.' to each teammate in a parallel SendMessage batch, "
+            "then TeamDelete immediately \u2014 do NOT wait for acks. "
+            "If panes won't terminate, run: tmux kill-pane -t <pane_id>"
         )
     return result
 
@@ -792,8 +938,9 @@ def foundry_unregister_team(
             "error": f"Team directory still exists: ~/.claude/teams/{team_name}/",
             "hint": (
                 "TeamDelete must be called BEFORE Foundry-Team-Down. "
-                "Proper order: SendMessage(shutdown) to each teammate -> "
-                "wait for acknowledgment -> TeamDelete -> Foundry-Team-Down."
+                "Proper order: SendMessage(shutdown) to each teammate in ONE parallel batch -> "
+                "TeamDelete immediately (do NOT wait for shutdown acks \u2014 idle panes ARE the signal) "
+                "-> Foundry-Team-Down."
             ),
             "phase": "team_dir_exists",
         }
@@ -805,9 +952,9 @@ def foundry_unregister_team(
         return {
             "error": f"{len(scan['live'])} teammate pane(s) still running: {', '.join(live_titles)}",
             "hint": (
-                "Teammates are still alive — they have active claude processes. "
-                "Send 'All work complete, stop working.' to each teammate, "
-                "wait for them to exit, then call Foundry-Team-Down again."
+                "Teammates are still alive \u2014 they have active claude processes. "
+                "Send 'All work complete, stop working.' to each teammate (parallel SendMessage), "
+                "then TeamDelete immediately (do NOT wait for acks). Re-run Foundry-Team-Down after."
             ),
             "phase": "live_teammates",
             "live_panes": live_titles,
@@ -1063,11 +1210,83 @@ def foundry_defects_to_tasks(
 # --- The big one: next action ---
 
 
+def _stamp_subphase_transitions(fdir: Path) -> None:
+    """Auto-stamp F0 / F0.5 / F0.9 transitions based on file-state signals.
+
+    The lead's `state.phase` stays "F0" through RESEARCH / DECOMPOSE / VALIDATE
+    and jumps straight to "F1" on start_cast, so without this stamper the
+    pre-F1 ~13 minutes appear as one unstructured block. Here we observe:
+
+      - first `castings/casting-*.md` appearing → F0 ends, F0.5 starts
+      - `castings/manifest.json` appearing      → F0.5 ends, F0.9 starts
+      - `.validate-passed` marker               → F0.9 end time recorded
+        (sub-phase still "open" until _update_phase fires at start_cast;
+        the marker lets us report validator pass time separately)
+
+    Called from foundry_next_action so every `Foundry-Next` call picks up
+    transitions that happened since the last call. Idempotent — only
+    writes when a new transition is detected.
+    """
+    if not fdir or not fdir.exists():
+        return
+    state_path = fdir / "state.json"
+    if not state_path.exists():
+        return
+    state = _load_json(state_path)
+    phase_times = state.get("phase_times", {})
+    now = _now()
+    changed = False
+
+    castings_dir = fdir / "castings"
+    has_casting_files = castings_dir.exists() and any(castings_dir.glob("casting-*.md"))
+    has_manifest = (castings_dir / "manifest.json").exists()
+    validate_passed_marker = fdir / ".validate-passed"
+
+    def _close(pid: str) -> bool:
+        entry = phase_times.get(pid)
+        if entry and "started_at" in entry and "ended_at" not in entry:
+            _finalize_open_phase_entry(entry, now)
+            return True
+        return False
+
+    def _open(pid: str) -> bool:
+        if pid not in phase_times:
+            phase_times[pid] = {"started_at": now}
+            return True
+        return False
+
+    if has_casting_files:
+        changed |= _close("F0")
+        changed |= _open("F0.5")
+    if has_manifest:
+        changed |= _close("F0.5")
+        changed |= _open("F0.9")
+    if validate_passed_marker.exists():
+        entry = phase_times.get("F0.9")
+        if entry and "validate_passed_at" not in entry:
+            try:
+                entry["validate_passed_at"] = validate_passed_marker.read_text(encoding="utf-8").strip() or now
+            except OSError:
+                entry["validate_passed_at"] = now
+            changed = True
+
+    if changed:
+        state["phase_times"] = phase_times
+        _save_json(state_path, state)
+
+
 def foundry_next_action(
     project_root: str = ".",
 ) -> dict:
     """Determine what the lead should do next based on current foundry state."""
+    fdir_stamp = get_run_dir(project_root)
+    trace_skip_decision: dict | None = None
+    if fdir_stamp and fdir_stamp.exists():
+        _stamp_subphase_transitions(fdir_stamp)
+        trace_skip_decision = _maybe_skip_trace(fdir_stamp, project_root)
     result = _compute_next_action(project_root)
+    if trace_skip_decision and trace_skip_decision.get("skip"):
+        result["trace_skip"] = trace_skip_decision
 
     # v3.3.0: Stall watchdog + sharpened imperative.
     #
@@ -1106,7 +1325,10 @@ def foundry_next_action(
     # when the lead needs it, but the first line is a single command.
     action = result.get("action", "")
     original_instructions = result.get("instructions", "")
-    imperative_header = _format_imperative_header(action, original_instructions, result.get("details", {}))
+    run_name_for_imperative = fdir_stall.name if fdir_stall and fdir_stall.exists() else ""
+    imperative_header = _format_imperative_header(
+        action, original_instructions, result.get("details", {}), run_name=run_name_for_imperative
+    )
 
     directives = _read_directives(project_root)
     directive_block = ""
@@ -1130,13 +1352,29 @@ def foundry_next_action(
         "\n- NEVER narrate progress as 'Checkpoint \u2014 X complete', 'Checkpoint reached', 'Milestone \u2014 X', or similar. Foundry has NO checkpoints. You are not a checkpointing orchestrator. Execute the next tool call silently and keep moving."
         "\n- NEVER skip SIGHT because 'no URL.' If frontend files exist, you need a URL. Gate will block."
         "\n- NEVER spawn CAST or GRIND teammates with run_in_background=true. They are foreground, TeamCreate-managed, and must run through Foundry-Spawn-Teammate + verbatim Agent. Background-spawning bypasses the router architecture and breaks spec fidelity."
-        "\n- NEVER modify, paraphrase, or augment a prompt returned by Foundry-Spawn-Teammate. Pass it to Agent VERBATIM. GRIND is the only exception: append a '## Defects to fix this cycle:' block BELOW the prompt, never inside it."
+        "\n- NEVER modify, paraphrase, or augment a prompt returned by Foundry-Spawn-Teammate. Pass it to Agent VERBATIM. GRIND is the only exception: append (a) the `grind_cycle_context` block if returned (prior-cycle file changes) and (b) the '## Defects to fix this cycle:' block BELOW the prompt, in that order. Never inside the prompt."
         "\n- If the user typed a message, treat it as a directive. Absorb and keep going."
         "\n- Zero approval gates. The foundry runs until F6 DONE or an error stops it."
+        "\n- NEVER wait for teammate 'shutdown_response', 'shutdown_ack', idle-confirmation, or any reply after "
+        "issuing shutdown. The ONLY shutdown signals foundry recognizes are (a) TeamDelete returning ok and "
+        "(b) Foundry-Team-Down succeeding. Narrating 'awaiting shutdown approvals' is a stall \u2014 call TeamDelete "
+        "immediately. Idle / terminated panes ARE the signal; TeamDelete cleans them."
     )
 
-    # Assemble instructions: stall warning (if any) → imperative → context → directives → rules
-    parts = []
+    # Assemble instructions (v3.5.0: stable-first ordering for prompt caching).
+    #
+    # Every Foundry-Next response is a user-turn message in the lead's single
+    # conversation. A stable byte-identical prefix across calls is cache-hit-
+    # eligible; the lead calls Foundry-Next ~30-50 times per run, so emitting
+    # rules + framing FIRST (before the volatile imperative/CONTEXT/directives)
+    # maximizes cache hits on input tokens.
+    #
+    # Lead attention is preserved by the explicit "═══ YOUR NEXT ACTION ═══"
+    # marker: after the rules block, the imperative header's "YOUR NEXT CALL"
+    # / "YOUR NEXT CALLS" lead-line remains the action-scanning target that
+    # the lead has been trained to find.
+    parts = [critical_rules.lstrip()]
+    parts.append("\n═══ YOUR NEXT ACTION ═══\n")
     if stall_warning:
         parts.append(stall_warning)
     parts.append(imperative_header)
@@ -1145,7 +1383,6 @@ def foundry_next_action(
     parts.append(original_instructions)
     if directive_block:
         parts.append(directive_block)
-    parts.append(critical_rules)
     result["instructions"] = "\n".join(parts)
 
     # Context budget tracking
@@ -1188,24 +1425,37 @@ def foundry_next_action(
 # rest by guessing.
 _ACTION_IMPERATIVES = {
     "init": "YOUR NEXT CALL: Foundry-Init (start a new run)",
-    "cleanup_teams": "YOUR NEXT CALL: TeamDelete + Foundry-Team-Down for every active team, in order",
+    "cleanup_teams": (
+        "YOUR NEXT CALLS (in order \u2014 do NOT wait for shutdown acks):\n"
+        "  (1) Send shutdown to each teammate: SendMessage(to=<teammate>, message='All work complete, stop working.') "
+        "\u2014 one SendMessage per teammate in ONE parallel-tool-use message. Do not use structured messages with "
+        "to='*' broadcast \u2014 broadcast rejects structured payloads.\n"
+        "  (2) Immediately call TeamDelete for each active team. Do NOT wait for 'shutdown_response' events, "
+        "'shutdown_ack' events, idle confirmations, or any teammate reply. Idle / terminated panes ARE the "
+        "shutdown signal. TeamDelete cleans zombie panes.\n"
+        "  (3) Foundry-Team-Down for each team name.\n"
+        "Stalling here is the #1 cleanup failure mode: the lead sends shutdown, sees panes idle, and waits "
+        "forever for a reply that never comes."
+    ),
     "add_castings": (
         "YOUR NEXT CALLS (in order):\n"
-        "  (1) TeamCreate('foundry-decompose')\n"
-        "  (2) Foundry-Team-Up(team_name='foundry-decompose')\n"
+        "  (1) TeamCreate('foundry-{run}-decompose')\n"
+        "  (2) Foundry-Team-Up(team_name='foundry-{run}-decompose')\n"
         "  (3) Spawn 1-5 Explore agents in a SINGLE message to write casting files to foundry-archive/{run}/castings/"
     ),
     "transition_to_cast": (
-        "YOUR NEXT CALLS (in order):\n"
+        "YOUR NEXT CALLS (in order — v3.5.0 bulk flow; saves N-1 roundtrips):\n"
         "  (1) Foundry-Gate(phase='cast')\n"
         "  (2) Foundry-Phase(phase='start_cast')\n"
-        "  (3) TeamCreate('foundry-cast-wave-1')\n"
-        "  (4) Foundry-Team-Up(team_name='foundry-cast-wave-1')\n"
-        "  (5) For EACH casting in wave 1: Foundry-Spawn-Teammate(casting_id=N, phase='cast')\n"
-        "  (6) For EACH returned prompt: spawn Agent with model='opus', subagent_type='general-purpose', "
-        "mode='bypassPermissions', prompt=<returned prompt text VERBATIM — no edits>. "
-        "NEVER spawn CAST teammates with run_in_background=true; they are foreground, TeamCreate-managed. "
-        "NEVER use subagent_type='Explore' for CAST (that's for F0 research and F2 inspect streams only)."
+        "  (3) TeamCreate('foundry-{run}-cast-wave-1')\n"
+        "  (4) Foundry-Team-Up(team_name='foundry-{run}-cast-wave-1')\n"
+        "  (5) Foundry-Cast-Wave(wave=1, phase='cast') \u2014 returns ALL prompts for wave 1 in ONE call.\n"
+        "  (6) In a SINGLE message (parallel tool use), spawn one Agent per returned casting: "
+        "model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
+        "prompt=<that casting's prompt text VERBATIM — no edits>. "
+        "Do NOT send multiple messages with one Agent each \u2014 that serializes what should be parallel.\n"
+        "Rules still apply: NEVER run_in_background=true; NEVER subagent_type='Explore' for CAST "
+        "(Explore is for F0 research and F2 inspect streams only)."
     ),
     "build_castings": (
         "YOUR NEXT ACTION depends on wave state:\n"
@@ -1230,11 +1480,14 @@ _ACTION_IMPERATIVES = {
         "  (1) Foundry-Tasks\n"
         "  (2) Foundry-Gate(phase='grind')\n"
         "  (3) Foundry-Phase(phase='grind_start')\n"
-        "  (4) TeamCreate('foundry-grind-N')\n"
-        "  (5) Foundry-Team-Up(team_name='foundry-grind-N')\n"
+        "  (4) TeamCreate('foundry-{run}-grind-N')\n"
+        "  (5) Foundry-Team-Up(team_name='foundry-{run}-grind-N')\n"
         "  (6) For each casting with open defects: Foundry-Spawn-Teammate(casting_id=N, phase='grind')\n"
         "  (7) Spawn Agent(model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
-        "prompt=<returned prompt VERBATIM, then APPEND the defect list in a '## Defects to fix this cycle:' block BELOW the prompt>). "
+        "prompt=<returned prompt VERBATIM, then APPEND (a) the `grind_cycle_context` block from the spawn "
+        "response if present \u2014 lists files changed in prior cycles so the teammate reads current state "
+        "before acting, then (b) the defect list in a '## Defects to fix this cycle:' block. Order: prompt \u2192 "
+        "cycle_context \u2192 defects. Both appended BELOW the prompt, never inside it.>). "
         "Same foreground rule as CAST \u2014 never background-spawn GRIND teammates."
     ),
     "fix_defects": (
@@ -1260,13 +1513,17 @@ _ACTION_IMPERATIVES = {
 }
 
 
-def _format_imperative_header(action: str, instructions: str, details: dict) -> str:
+def _format_imperative_header(action: str, instructions: str, details: dict, run_name: str = "") -> str:
     """Produce the one-line 'YOUR NEXT CALL' header for the given action.
-    Falls back to a generic header if the action is unmapped."""
+    Falls back to a generic header if the action is unmapped.
+
+    Substitutes `{run}` in the imperative with the active run slug so team
+    names (foundry-{run}-cast-wave-N etc.) are distinguishable across runs.
+    If no run is active, `{run}` is replaced with `active` as a safe default.
+    """
     imperative = _ACTION_IMPERATIVES.get(action)
     if imperative:
-        return imperative
-    # Unknown action — surface it but still give a forcing line
+        return imperative.replace("{run}", run_name or "active")
     return f"YOUR NEXT CALL: follow the CONTEXT below (action='{action}'). Execute the first tool call mentioned. Do not deliberate."
 
 
@@ -1411,9 +1668,10 @@ def _compute_next_action(project_root: str) -> dict:
             "action": "cleanup_teams",
             "instructions": (
                 f"Active teams detected: {', '.join(teams['teams'])}. "
-                "Shut down all teammates (SendMessage 'All work complete, stop working' + TeamDelete), "
-                "then call Foundry-Team-Down for each team name. "
-                "Unregister automatically kills lingering tmux panes."
+                "Send 'All work complete, stop working.' to each teammate in ONE parallel SendMessage batch, "
+                "then IMMEDIATELY call TeamDelete for each team \u2014 do NOT wait for shutdown_response, "
+                "shutdown_ack, idle confirmations, or any teammate reply. Idle / terminated panes ARE the "
+                "shutdown signal. TeamDelete cleans lingering tmux panes. Then Foundry-Team-Down for each team name."
             ),
             "details": {"active_teams": teams["teams"]},
         }
