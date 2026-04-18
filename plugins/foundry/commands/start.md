@@ -63,7 +63,7 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
 1. Read the spec in full. Read research findings (`research/SUMMARY.md` or `research/*.md`).
 2. **Extract global invariants.** If `spec.md` has a `## Global Invariants` section (or `<global_invariants>` block), copy it verbatim to `manifest.global_invariants` — INCLUDING any `### Architectural Placement` / `### Cross-Cutting Technical Rules` subsections, GI-NNN entries with `[from A-NNN]` citations, and the literal "None — the user gave no explicit placement constraints." sentinel if the forge spec wrote that. Otherwise empty string. **Never paraphrase, never filter, never omit subsections.** Forge v3.4.0+ specs always have this section; if it's missing, the spec was either hand-written or forge failed validation. For forge-generated specs that contain the sentinel, propagate the sentinel verbatim — downstream PROVE/TRACE read it as "no placement rules to enforce for this run." The `<global_invariants>` block in every casting prompt is the only channel through which architectural-placement constraints reach CAST teammates; an empty block when the spec had real constraints means every casting will be built in a constraint-free context and will likely place code in the wrong architectural layer.
 3. **Extract mandatory rules.** If `codebase/MANDATORY_RULES.md` exists from F0 mapping, copy its body verbatim to `manifest.mandatory_rules`. Otherwise empty string. Never filter.
-4. Identify 2-5 domains. Spawn parallel Explore agents (1 per domain, max 5). Each agent writes:
+4. Identify 2-5 domains. Spawn parallel **background** Agents (1 per domain, max 5; `subagent_type='general-purpose'`, `run_in_background=true`, `mode='bypassPermissions'`). No team needed — these are short-lived file writers and don't need `TeamCreate`/shutdown coordination. Each agent writes:
    - An entry in `castings/manifest.json`
    - A complete prompt file at `castings/casting-{id}-prompt.md`
 5. **Each casting manifest entry MUST have:** `id`, `title`, `spec_text` (verbatim extract), `observable_truths` (min 3 user-facing), `key_files` (max 8, no overlap), `must_haves` (`truths`, `artifacts` with `min_lines`, `key_links`, and `coverage_list` for MIGRATION specs), `research_context`.
@@ -177,7 +177,7 @@ If a teammate says "this defect requires a spec change": halt, log `SPEC_CHANGE_
 
 ### F4: ASSAY
 
-Split requirements into 4 groups → spawn 4 parallel assayer agents (opus, Explore, effort max). Each reads spec FIRST, forms expectations, THEN reads code. Merge verdicts via `Foundry-Verdict`. All VERIFIED → F5/F5.5/F6. Any non-VERIFIED → F3 → F2 → F4.
+Split requirements into 4 groups → spawn 4 parallel `foundry:assayer` agents (frontmatter sets model=opus + effort=max). Each reads spec FIRST, forms expectations, THEN reads code. Merge verdicts via `Foundry-Verdict`. All VERIFIED → F5/F5.5/F6. Any non-VERIFIED → F3 → F2 → F4.
 
 ### F5: TEMPER (--temper only)
 

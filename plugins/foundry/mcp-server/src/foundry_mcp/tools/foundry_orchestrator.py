@@ -1438,10 +1438,15 @@ _ACTION_IMPERATIVES = {
         "forever for a reply that never comes."
     ),
     "add_castings": (
-        "YOUR NEXT CALLS (in order):\n"
-        "  (1) TeamCreate('decompose-{run}')\n"
-        "  (2) Foundry-Team-Up(team_name='decompose-{run}')\n"
-        "  (3) Spawn 1-5 Explore agents in a SINGLE message to write casting files to foundry-archive/{run}/castings/"
+        "YOUR NEXT CALL: Spawn 1-5 BACKGROUND Agents in a SINGLE parallel message \u2014 one per "
+        "domain identified from the spec. Per-Agent params: model='opus', "
+        "subagent_type='general-purpose', mode='bypassPermissions', run_in_background=true, "
+        "prompt=<per commands/start.md \u00a7F0.5 DECOMPOSE: write the domain's entry into "
+        "manifest.json AND write casting-{id}-prompt.md to foundry-archive/{run}/castings/ "
+        "following the layout in start.md \u00a76>. "
+        "No team needed \u2014 these are short-lived file writers; TeamCreate ceremony is skipped. "
+        "You'll be notified as each completes; use TaskOutput(task_id) to retrieve any return "
+        "message. After all complete, call Foundry-Validate-Castings."
     ),
     "transition_to_cast": (
         "YOUR NEXT CALLS (in order — v3.5.0 bulk flow; saves N-1 roundtrips):\n"
@@ -1454,8 +1459,10 @@ _ACTION_IMPERATIVES = {
         "model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
         "prompt=<that casting's prompt text VERBATIM — no edits>. "
         "Do NOT send multiple messages with one Agent each \u2014 that serializes what should be parallel.\n"
-        "Rules still apply: NEVER run_in_background=true; NEVER subagent_type='Explore' for CAST "
-        "(Explore is for F0 research and F2 inspect streams only)."
+        "Rules still apply: NEVER run_in_background=true; NEVER subagent_type='Explore' for CAST. "
+        "Generic Explore is reserved for F0.5 DECOMPOSE (per-domain casting authors). F2 INSPECT "
+        "and F4 ASSAY use named agents (foundry:tracer, foundry:assayer, foundry:research-auditor, "
+        "foundry:coverage-diff) whose frontmatter carries model/effort/tools."
     ),
     "build_castings": (
         "YOUR NEXT ACTION depends on wave state:\n"
@@ -1467,13 +1474,17 @@ _ACTION_IMPERATIVES = {
     "transition_to_inspect": "YOUR NEXT CALL: Foundry-Gate(phase='inspect')",
     "run_streams": (
         "YOUR NEXT CALLS: spawn every missing INSPECT stream in a SINGLE parallel message. Stream-specific rules:\n"
-        "  - TRACE: Agent(model='opus', subagent_type='Explore', prompt=agents/tracer.md)\n"
-        "  - PROVE: Agent(model='opus', subagent_type='Explore', prompt=agents/assayer.md)\n"
-        "  - RESEARCH_AUDIT: Agent(model='sonnet', subagent_type='Explore', prompt=agents/research-auditor.md)\n"
-        "  - COVERAGE_DIFF (MIGRATION only): Agent(model='sonnet', subagent_type='Explore', prompt=agents/coverage-diff.md)\n"
-        "  - SIGHT: runs in MAIN THREAD via Playwright \u2014 not spawned as an Agent\n"
-        "  - TEST / PROBE: may run as background Agents\n"
-        "After each stream finishes, call Foundry-Stream(stream, cycle, items_checked, items_total, findings_count)."
+        "All four streams spawn as BACKGROUND Agents (run_in_background=true) so SIGHT can run "
+        "concurrently in the main thread instead of the main thread blocking on tool_results:\n"
+        "  - TRACE: Agent(subagent_type='foundry:tracer', run_in_background=true, prompt='Run TRACE wiring verification for the active foundry run.')\n"
+        "  - PROVE: Agent(subagent_type='foundry:assayer', run_in_background=true, prompt='Run PROVE (spec-to-code citation verification) for the active foundry run.')\n"
+        "  - RESEARCH_AUDIT: Agent(subagent_type='foundry:research-auditor', run_in_background=true, prompt='Run RESEARCH_AUDIT for the active foundry run.')\n"
+        "  - COVERAGE_DIFF (MIGRATION only): Agent(subagent_type='foundry:coverage-diff', run_in_background=true, prompt='Run COVERAGE_DIFF for the active foundry run.')\n"
+        "  - SIGHT: runs in MAIN THREAD via Playwright \u2014 execute while the four background streams run\n"
+        "  - TEST / PROBE: may also run as background Agents\n"
+        "When each background stream's completion notification fires: call TaskOutput(task_id) "
+        "to retrieve its findings, then call Foundry-Stream(stream, cycle, items_checked, "
+        "items_total, findings_count) with the parsed counts. Do NOT poll \u2014 the harness notifies you."
     ),
     "transition_to_grind": (
         "YOUR NEXT CALLS (in order):\n"
@@ -1501,13 +1512,17 @@ _ACTION_IMPERATIVES = {
         "  (1) Foundry-Phase(phase='inspect_clean')\n"
         "  (2) Foundry-Gate(phase='assay')\n"
         "  (3) Update state to F4\n"
-        "  (4) Spawn 4 parallel assayer Agents in a SINGLE message: "
-        "model='opus', subagent_type='Explore', prompt=agents/assayer.md, effort=max"
+        "  (4) Spawn 4 parallel Agent(subagent_type='foundry:assayer', "
+        "prompt='Assay requirement group N of 4 for the active foundry run. "
+        "Spec-before-code; default posture is find the failure.') in a SINGLE message. "
+        "(The assayer's frontmatter carries model=opus and effort=max.)"
     ),
     "run_assay": (
-        "YOUR NEXT CALL: spawn 4 parallel assayer Agents in a SINGLE message: "
-        "model='opus', subagent_type='Explore', prompt=agents/assayer.md, effort=max. "
-        "Each reads the spec FIRST, forms expectations, then reads code (spec-before-code)."
+        "YOUR NEXT CALL: spawn 4 parallel Agent(subagent_type='foundry:assayer', "
+        "prompt='Assay requirement group N of 4 for the active foundry run. "
+        "Spec-before-code; default posture is find the failure.') in a SINGLE message. "
+        "Each reads the spec FIRST, forms expectations, then reads code. "
+        "(The assayer's frontmatter carries model=opus and effort=max.)"
     ),
     "transition_to_done": "YOUR NEXT CALL: Foundry-Phase(phase='done')",
 }
@@ -1518,8 +1533,9 @@ def _format_imperative_header(action: str, instructions: str, details: dict, run
     Falls back to a generic header if the action is unmapped.
 
     Substitutes `{run}` in the imperative with the active run slug so team
-    names (decompose-{run}, cast-{run}-wave-N, grind-{run}-cycle-N) are
-    distinguishable across concurrent runs.
+    names (cast-{run}-wave-N, grind-{run}-cycle-N) are distinguishable across
+    concurrent runs. DECOMPOSE no longer uses a team — it spawns background
+    Agents (per commands/start.md \u00a7F0.5).
     If no run is active, `{run}` is replaced with `active` as a safe default.
     """
     imperative = _ACTION_IMPERATIVES.get(action)
@@ -1687,14 +1703,20 @@ def _compute_next_action(project_root: str) -> dict:
         "subagent_type": "general-purpose",
         "mode": "bypassPermissions",
     }
-    INSPECT_TRACE_CONFIG = {
+    DECOMPOSE_AGENT_CONFIG = {
         "model": "opus",
-        "subagent_type": "Explore",
+        "subagent_type": "general-purpose",
+        "mode": "bypassPermissions",
+        "run_in_background": True,
+    }
+    INSPECT_TRACE_CONFIG = {
+        "subagent_type": "foundry:tracer",
+        "run_in_background": True,
         "description": "TRACE: LSP wiring verification",
     }
     INSPECT_PROVE_CONFIG = {
-        "model": "opus",
-        "subagent_type": "Explore",
+        "subagent_type": "foundry:assayer",
+        "run_in_background": True,
         "description": "PROVE: spec-to-code citation verification",
     }
     GRIND_AGENT_CONFIG = {
@@ -1703,8 +1725,7 @@ def _compute_next_action(project_root: str) -> dict:
         "mode": "bypassPermissions",
     }
     ASSAY_AGENT_CONFIG = {
-        "model": "opus",
-        "subagent_type": "Explore",
+        "subagent_type": "foundry:assayer",
         "description": "ASSAY: fresh-eyes spec-before-code verification",
     }
 
@@ -1716,14 +1737,18 @@ def _compute_next_action(project_root: str) -> dict:
                 "phase": "F0",
                 "action": "add_castings",
                 "instructions": (
-                    f"DECOMPOSE: Create a team to write casting files.\n"
-                    f"1. Write the manifest: {fdir}/castings/manifest.json\n"
-                    f"2. Create a decompose team (TeamCreate), spawn teammates to write casting-N.md files.\n"
-                    f"   Each teammate writes 2-3 castings. DO NOT write castings in the main context.\n"
-                    f"3. All files go under {fdir}/castings/\n"
-                    f"   DO NOT write to castings/ at project root."
+                    f"DECOMPOSE: Spawn 1-5 BACKGROUND Agents to write casting files. No team needed.\n"
+                    f"1. Identify 2-5 domains from the spec.\n"
+                    f"2. Spawn one background Agent per domain in a SINGLE parallel message:\n"
+                    f"     model='opus', subagent_type='general-purpose', mode='bypassPermissions',\n"
+                    f"     run_in_background=true,\n"
+                    f"     prompt='<per commands/start.md \u00a7F0.5: write manifest.json entry +\n"
+                    f"              casting-<id>-prompt.md for your domain>'\n"
+                    f"3. All files go under {fdir}/castings/ \u2014 NOT castings/ at project root.\n"
+                    f"4. You'll be notified as each Agent completes; retrieve via TaskOutput(task_id).\n"
+                    f"   After all complete, call Foundry-Validate-Castings."
                 ),
-                "details": {"foundry_dir": str(fdir), "agent_config": CAST_AGENT_CONFIG},
+                "details": {"foundry_dir": str(fdir), "agent_config": DECOMPOSE_AGENT_CONFIG},
             }
         return {
             "phase": "F0",
@@ -1811,7 +1836,7 @@ def _compute_next_action(project_root: str) -> dict:
             "instructions": (
                 "INSPECT clean: zero defects. Call Foundry-Phase(phase='inspect_clean'), "
                 "then Foundry-Gate(phase='assay'), then update state to F4. "
-                "Spawn 4 parallel assayer agents using the config below (opus, Explore, effort max)."
+                "Spawn 4 parallel assayer agents using the config below (subagent_type='foundry:assayer' — frontmatter carries opus + effort=max)."
             ),
             "details": {"open_defects": 0, "agent_config": ASSAY_AGENT_CONFIG},
         }
