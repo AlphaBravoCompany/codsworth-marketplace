@@ -1439,16 +1439,16 @@ _ACTION_IMPERATIVES = {
     ),
     "add_castings": (
         "YOUR NEXT CALLS (in order):\n"
-        "  (1) TeamCreate('foundry-{run}-decompose')\n"
-        "  (2) Foundry-Team-Up(team_name='foundry-{run}-decompose')\n"
+        "  (1) TeamCreate('decompose-{run}')\n"
+        "  (2) Foundry-Team-Up(team_name='decompose-{run}')\n"
         "  (3) Spawn 1-5 Explore agents in a SINGLE message to write casting files to foundry-archive/{run}/castings/"
     ),
     "transition_to_cast": (
         "YOUR NEXT CALLS (in order — v3.5.0 bulk flow; saves N-1 roundtrips):\n"
         "  (1) Foundry-Gate(phase='cast')\n"
         "  (2) Foundry-Phase(phase='start_cast')\n"
-        "  (3) TeamCreate('foundry-{run}-cast-wave-1')\n"
-        "  (4) Foundry-Team-Up(team_name='foundry-{run}-cast-wave-1')\n"
+        "  (3) TeamCreate('cast-{run}-wave-1')\n"
+        "  (4) Foundry-Team-Up(team_name='cast-{run}-wave-1')\n"
         "  (5) Foundry-Cast-Wave(wave=1, phase='cast') \u2014 returns ALL prompts for wave 1 in ONE call.\n"
         "  (6) In a SINGLE message (parallel tool use), spawn one Agent per returned casting: "
         "model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
@@ -1480,8 +1480,8 @@ _ACTION_IMPERATIVES = {
         "  (1) Foundry-Tasks\n"
         "  (2) Foundry-Gate(phase='grind')\n"
         "  (3) Foundry-Phase(phase='grind_start')\n"
-        "  (4) TeamCreate('foundry-{run}-grind-N')\n"
-        "  (5) Foundry-Team-Up(team_name='foundry-{run}-grind-N')\n"
+        "  (4) TeamCreate('grind-{run}-cycle-N')\n"
+        "  (5) Foundry-Team-Up(team_name='grind-{run}-cycle-N')\n"
         "  (6) For each casting with open defects: Foundry-Spawn-Teammate(casting_id=N, phase='grind')\n"
         "  (7) Spawn Agent(model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
         "prompt=<returned prompt VERBATIM, then APPEND (a) the `grind_cycle_context` block from the spawn "
@@ -1518,7 +1518,8 @@ def _format_imperative_header(action: str, instructions: str, details: dict, run
     Falls back to a generic header if the action is unmapped.
 
     Substitutes `{run}` in the imperative with the active run slug so team
-    names (foundry-{run}-cast-wave-N etc.) are distinguishable across runs.
+    names (decompose-{run}, cast-{run}-wave-N, grind-{run}-cycle-N) are
+    distinguishable across concurrent runs.
     If no run is active, `{run}` is replaced with `active` as a safe default.
     """
     imperative = _ACTION_IMPERATIVES.get(action)

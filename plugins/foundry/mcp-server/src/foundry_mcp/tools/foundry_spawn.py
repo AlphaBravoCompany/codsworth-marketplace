@@ -255,7 +255,7 @@ def foundry_cast_wave(
             "ok": True,
             "wave": N,
             "phase": "cast",
-            "team_name_suggestion": "foundry-{run}-cast-wave-N",
+            "team_name_suggestion": "cast-{run}-wave-N  (or grind-{run}-cycle-N for phase='grind')",
             "castings": [
                 {"casting_id": 1, "prompt": "...", "prompt_hash": "sha256:..."},
                 ...
@@ -341,7 +341,13 @@ def foundry_cast_wave(
             pass
 
     run_name = fdir.name
-    team_suggestion = f"foundry-{run_name}-{'cast' if phase == 'cast' else 'grind'}-wave-{wave}"
+    # Phase-first naming (v3.5.2): {phase}-{run}-{suffix}. CAST uses `wave-N`
+    # from the dependency graph; GRIND uses `cycle-N` from the defect cycle
+    # counter. The same bulk tool services both phases; `wave` is the arg
+    # name in both but semantically distinct across phases.
+    phase_prefix = "cast" if phase == "cast" else "grind"
+    suffix_word = "wave" if phase == "cast" else "cycle"
+    team_suggestion = f"{phase_prefix}-{run_name}-{suffix_word}-{wave}"
 
     return {
         "ok": True,
