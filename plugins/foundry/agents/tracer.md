@@ -1,7 +1,7 @@
 ---
 name: tracer
 description: Serena LSP-powered deterministic wiring verification for Foundry INSPECT phase
-model: opus
+model: sonnet
 effort: high
 ---
 
