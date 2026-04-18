@@ -295,11 +295,12 @@ Update the task status via TaskUpdate:
 
     ```
     ## Requirement Citations
-    - US-1: src/api/auth/login.ts:42-78 (login endpoint with bcrypt)
-    - US-2: src/components/LoginForm.tsx:15-50 (form + submit handler)
-    - FR-3: src/api/auth/login.ts:65 (rate limit check)
-    - AC-1: src/api/auth/__tests__/login.test.ts:20-40 (AC verified by test)
+    - US-N: src/api/auth/login.ts:42-78 (login endpoint with bcrypt)
+    - US-M: src/components/LoginForm.tsx:15-50 (form + submit handler)
+    - FR-K: src/api/auth/login.ts:65 (rate limit check)
+    - AC-L: src/api/auth/__tests__/login.test.ts:20-40 (AC verified by test)
     ```
+    (Template placeholders — substitute your casting's actual numeric IDs.)
 
     Every ID. No exceptions. If a requirement spans multiple files, cite all of them. If a requirement is "verified by test," cite the test file:line. If you did not implement a requirement in your slice, say so explicitly and explain why — the lead will treat that as a scope-flag and re-dispatch.
 

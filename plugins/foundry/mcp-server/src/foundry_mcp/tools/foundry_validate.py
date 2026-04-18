@@ -393,8 +393,16 @@ def foundry_validate_castings(
                 f"copy spec text character-for-character."
             )
 
-        # 7d: forbidden scope-cutting phrases
-        forbidden_found = _find_forbidden_phrases(prompt_text)
+        # 7d: forbidden scope-cutting phrases.
+        # Scope the scan to content from the first <spec_requirements> tag
+        # onward. The teammate.md scaffolding that sits above that boundary
+        # (per commands/start.md §6's fixed prompt layout) intentionally
+        # names the forbidden phrases in quoted anti-pattern warnings so
+        # teammates learn to refuse them — scanning it indiscriminately
+        # makes the validator flag its own template.
+        spec_req_idx = prompt_text.lower().find("<spec_requirements>")
+        scan_target = prompt_text[spec_req_idx:] if spec_req_idx >= 0 else prompt_text
+        forbidden_found = _find_forbidden_phrases(scan_target)
         if forbidden_found:
             dim7_issues.append({
                 "casting": cid,
