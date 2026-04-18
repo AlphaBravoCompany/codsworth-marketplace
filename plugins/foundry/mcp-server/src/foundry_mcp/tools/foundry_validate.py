@@ -394,15 +394,13 @@ def foundry_validate_castings(
             )
 
         # 7d: forbidden scope-cutting phrases.
-        # Scope the scan to content from the first <spec_requirements> tag
-        # onward. The teammate.md scaffolding that sits above that boundary
-        # (per commands/start.md §6's fixed prompt layout) intentionally
-        # names the forbidden phrases in quoted anti-pattern warnings so
-        # teammates learn to refuse them — scanning it indiscriminately
-        # makes the validator flag its own template.
-        spec_req_idx = prompt_text.lower().find("<spec_requirements>")
-        scan_target = prompt_text[spec_req_idx:] if spec_req_idx >= 0 else prompt_text
-        forbidden_found = _find_forbidden_phrases(scan_target)
+        # Since v3.6.0 teammate.md lives in foundry:teammate's system prompt
+        # (not inlined into casting-{id}-prompt.md anymore), the file contains
+        # only decompose-authored content — mandatory_rules block, global_
+        # invariants block, spec_requirements block, metadata, classification.
+        # All of that should be scanned for scope-cutting language, so scan
+        # the whole prompt_text.
+        forbidden_found = _find_forbidden_phrases(prompt_text)
         if forbidden_found:
             dim7_issues.append({
                 "casting": cid,

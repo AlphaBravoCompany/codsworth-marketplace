@@ -357,10 +357,12 @@ def foundry_cast_wave(
         "castings": results,
         "instructions": (
             f"Spawn {len(results)} Agent tool calls in a SINGLE MESSAGE (parallel tool use). "
-            "Each Agent call gets its corresponding casting's prompt VERBATIM — no modification. "
-            "Required per-Agent params: model='opus', subagent_type='general-purpose', "
-            "mode='bypassPermissions'. NEVER run_in_background=true (foreground, TeamCreate-managed). "
+            "Each Agent call gets its corresponding casting's prompt VERBATIM \u2014 no modification. "
+            "Required per-Agent params: subagent_type='foundry:teammate', "
+            "mode='bypassPermissions'. (foundry:teammate's frontmatter sets model=opus + effort=xhigh.) "
+            "NEVER run_in_background=true (foreground, TeamCreate-managed). "
             "Before spawning: TeamCreate(team_name_suggestion) + Foundry-Team-Up(team_name_suggestion). "
-            "GRIND phase only: append '## Defects to fix this cycle:' block BELOW each prompt."
+            "GRIND phase only: append the grind_cycle_context block (if returned) then a "
+            "'## Defects to fix this cycle:' block BELOW each prompt, never inside it."
         ),
     }

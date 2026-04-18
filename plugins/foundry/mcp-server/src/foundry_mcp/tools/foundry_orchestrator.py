@@ -1351,7 +1351,7 @@ def foundry_next_action(
         "\n- NEVER deliberate for more than 30 seconds between tool calls. If you catch yourself thinking, call Foundry-Next and execute whatever it says."
         "\n- NEVER narrate progress as 'Checkpoint \u2014 X complete', 'Checkpoint reached', 'Milestone \u2014 X', or similar. Foundry has NO checkpoints. You are not a checkpointing orchestrator. Execute the next tool call silently and keep moving."
         "\n- NEVER skip SIGHT because 'no URL.' If frontend files exist, you need a URL. Gate will block."
-        "\n- NEVER spawn CAST or GRIND teammates with run_in_background=true. They are foreground, TeamCreate-managed, and must run through Foundry-Spawn-Teammate + verbatim Agent. Background-spawning bypasses the router architecture and breaks spec fidelity."
+        "\n- NEVER spawn foundry:teammate agents (CAST or GRIND) with run_in_background=true. They are foreground, TeamCreate-managed, and must run through Foundry-Cast-Wave or Foundry-Spawn-Teammate + verbatim Agent. Background-spawning bypasses the router architecture and breaks spec fidelity."
         "\n- NEVER modify, paraphrase, or augment a prompt returned by Foundry-Spawn-Teammate. Pass it to Agent VERBATIM. GRIND is the only exception: append (a) the `grind_cycle_context` block if returned (prior-cycle file changes) and (b) the '## Defects to fix this cycle:' block BELOW the prompt, in that order. Never inside the prompt."
         "\n- If the user typed a message, treat it as a directive. Absorb and keep going."
         "\n- Zero approval gates. The foundry runs until F6 DONE or an error stops it."
@@ -1456,13 +1456,15 @@ _ACTION_IMPERATIVES = {
         "  (4) Foundry-Team-Up(team_name='cast-{run}-wave-1')\n"
         "  (5) Foundry-Cast-Wave(wave=1, phase='cast') \u2014 returns ALL prompts for wave 1 in ONE call.\n"
         "  (6) In a SINGLE message (parallel tool use), spawn one Agent per returned casting: "
-        "model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
-        "prompt=<that casting's prompt text VERBATIM — no edits>. "
+        "subagent_type='foundry:teammate', mode='bypassPermissions', "
+        "prompt=<that casting's prompt text VERBATIM \u2014 no edits>. "
+        "(foundry:teammate's frontmatter carries model=opus + effort=xhigh + all tools.) "
         "Do NOT send multiple messages with one Agent each \u2014 that serializes what should be parallel.\n"
-        "Rules still apply: NEVER run_in_background=true; NEVER subagent_type='Explore' for CAST. "
-        "Generic Explore is reserved for F0.5 DECOMPOSE (per-domain casting authors). F2 INSPECT "
-        "and F4 ASSAY use named agents (foundry:tracer, foundry:assayer, foundry:research-auditor, "
-        "foundry:coverage-diff) whose frontmatter carries model/effort/tools."
+        "Rules still apply: NEVER run_in_background=true for foundry:teammate. NEVER "
+        "subagent_type='Explore' or 'general-purpose' for CAST. F0.5 DECOMPOSE uses background "
+        "general-purpose Agents; F2 INSPECT and F4 ASSAY use named agents (foundry:tracer, "
+        "foundry:assayer, foundry:research-auditor, foundry:coverage-diff) whose frontmatter "
+        "carries model/effort/tools."
     ),
     "build_castings": (
         "YOUR NEXT ACTION depends on wave state:\n"
@@ -1494,7 +1496,7 @@ _ACTION_IMPERATIVES = {
         "  (4) TeamCreate('grind-{run}-cycle-N')\n"
         "  (5) Foundry-Team-Up(team_name='grind-{run}-cycle-N')\n"
         "  (6) For each casting with open defects: Foundry-Spawn-Teammate(casting_id=N, phase='grind')\n"
-        "  (7) Spawn Agent(model='opus', subagent_type='general-purpose', mode='bypassPermissions', "
+        "  (7) Spawn Agent(subagent_type='foundry:teammate', mode='bypassPermissions', "
         "prompt=<returned prompt VERBATIM, then APPEND (a) the `grind_cycle_context` block from the spawn "
         "response if present \u2014 lists files changed in prior cycles so the teammate reads current state "
         "before acting, then (b) the defect list in a '## Defects to fix this cycle:' block. Order: prompt \u2192 "
@@ -1699,8 +1701,7 @@ def _compute_next_action(project_root: str) -> dict:
     # --- Agent config per phase (ENFORCED, not suggestions) ---
     # These are the exact parameters the lead MUST use when spawning agents.
     CAST_AGENT_CONFIG = {
-        "model": "opus",
-        "subagent_type": "general-purpose",
+        "subagent_type": "foundry:teammate",
         "mode": "bypassPermissions",
     }
     DECOMPOSE_AGENT_CONFIG = {
@@ -1720,8 +1721,7 @@ def _compute_next_action(project_root: str) -> dict:
         "description": "PROVE: spec-to-code citation verification",
     }
     GRIND_AGENT_CONFIG = {
-        "model": "opus",
-        "subagent_type": "general-purpose",
+        "subagent_type": "foundry:teammate",
         "mode": "bypassPermissions",
     }
     ASSAY_AGENT_CONFIG = {

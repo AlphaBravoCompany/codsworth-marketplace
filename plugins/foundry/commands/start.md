@@ -67,26 +67,22 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
    - An entry in `castings/manifest.json`
    - A complete prompt file at `castings/casting-{id}-prompt.md`
 5. **Each casting manifest entry MUST have:** `id`, `title`, `spec_text` (verbatim extract), `observable_truths` (min 3 user-facing), `key_files` (max 8, no overlap), `must_haves` (`truths`, `artifacts` with `min_lines`, `key_links`, and `coverage_list` for MIGRATION specs), `research_context`.
-6. **Each `casting-{id}-prompt.md` MUST have this structure:**
+6. **Each `casting-{id}-prompt.md` MUST have this structure (v3.6.0 — stable-first ordering for wave-level prompt caching; teammate methodology lives in `foundry:teammate`'s system prompt, NOT inlined here):**
 
    ```markdown
    # Casting {id}: {title}
 
-   {Include verbatim content of ${CLAUDE_PLUGIN_ROOT}/prompts/teammate.md — literal copy}
+   <mandatory_rules>
+   {Verbatim content of manifest.mandatory_rules — byte-identical across every casting in this run}
+   </mandatory_rules>
 
-   ---
+   <global_invariants>
+   {Verbatim content of manifest.global_invariants — byte-identical across every casting in this run}
+   </global_invariants>
 
    <spec_requirements>
    {Verbatim spec text for this casting's ACs — char-for-char from spec.md}
    </spec_requirements>
-
-   <global_invariants>
-   {Verbatim content of manifest.global_invariants — byte-identical across every casting}
-   </global_invariants>
-
-   <mandatory_rules>
-   {Verbatim content of manifest.mandatory_rules — byte-identical across every casting}
-   </mandatory_rules>
 
    ---
 
@@ -135,7 +131,7 @@ Call `Foundry-Gate(phase='cast')`.
 
 1. Determine wave from `manifest.json` dependency graph. Max 5 teammates per wave.
 2. `TeamCreate("cast-{run}-wave-N")` → `Foundry-Team-Up` (substitute `{run}` with the active run slug from `Foundry-Next`)
-3. `Foundry-Cast-Wave(wave=N, phase="cast")` — single bulk call returns prompts for every casting in the wave (v3.5.0). Then, in **ONE message**, spawn parallel Agent tool calls (one per returned casting) with `model=opus`, `subagent_type=general-purpose`, `prompt=<that casting's prompt VERBATIM>`. No modification. Do NOT serialize into separate messages — that's what the bulk tool + parallel tool use exists to avoid.
+3. `Foundry-Cast-Wave(wave=N, phase="cast")` — single bulk call returns prompts for every casting in the wave (v3.5.0). Then, in **ONE message**, spawn parallel Agent tool calls (one per returned casting) with `subagent_type=foundry:teammate`, `mode=bypassPermissions`, `prompt=<that casting's prompt VERBATIM>`. No modification. (foundry:teammate's frontmatter carries `model=opus + effort=xhigh` — don't override.) Do NOT serialize into separate messages — that's what the bulk tool + parallel tool use exists to avoid.
    - GRIND phase or single re-dispatch: fall back to per-casting `Foundry-Spawn-Teammate(casting_id=N, phase="cast"|"grind")`.
 4. Wait for teammates to finish their **work** (report "complete" or task list empty). Then send shutdown in ONE parallel SendMessage batch and **immediately** `TeamDelete` + `Foundry-Team-Down` — do NOT wait for shutdown_response/ack/idle confirmations. Idle panes are the signal; `TeamDelete` kills zombies.
 5. Build + test → commit → advance to next wave
