@@ -293,18 +293,68 @@ R1.5 RESEARCH runs unchanged. Same targeted stale-knowledge invalidation.
 
 ### R2 — V3 override: FLOW-INTERVIEW (replaces V2 free-form interview)
 
-In brownfield mode, R2 is conducted by the `flow-interviewer` agent. It does node-by-node confirmation against the flow graph.
+In brownfield mode, R2 is conducted **in the main Claude thread** (this session) — NOT by a spawned subagent. Subagents cannot call `AskUserQuestion`, which makes interactive node-by-node confirmation impossible from a subagent runtime. You (the main thread) have `AskUserQuestion` and will use it.
 
-**Procedure:**
+The methodology is documented in `${CLAUDE_PLUGIN_ROOT}/agents/flow-interviewer.md` as a reference. Read it once if you need the full procedure. The executable steps are below.
 
-1. Spawn ONE `flow-interviewer` agent (full content of `${CLAUDE_PLUGIN_ROOT}/agents/flow-interviewer.md` as prompt, or `subagent_type: "forge:flow-interviewer"` if registered).
-2. Input to flow-interviewer:
-   - `project_root`, `flow_graph_path` (from R0), `user_request` (the feature description + any prior context), `run_dir`, `scope_hint`, `session_state_path` (for transcript continuity).
-3. The flow-interviewer runs an interactive AskUserQuestion loop:
-   - Proposes each new hop one at a time.
-   - Pins hops on user `y`, adjusts on `adjust`, drops on `reject`.
-   - Records every Q/A verbatim to `transcript.md` using the existing A-NNN / Q-NNN convention.
-4. On completion, flow-interviewer emits `flow-delta.json` to `run_dir`.
+**Procedure (main thread executes, not a subagent):**
+
+1. **Load the flow graph into context.** Use the `Read` tool to read `{survey_dir}/flow-graph.json` in full. Note the node IDs, kinds, anchors, consumes/produces fields. This becomes your working vocabulary for the interview.
+
+2. **Capture or confirm the user's request.** If the plan command's FEATURE_NAME is a rich description (e.g., "Add a Services page..."), proceed. If it's a thin slug (e.g., "add-services-page"), ask the user via `AskUserQuestion` for a 1–2 sentence description of what they want to build.
+
+3. **Sketch the proposed hop chain internally.** Given the flow graph and the user's request, identify: (a) the likely origin — which existing graph node is the natural attachment point; (b) the new nodes that need to be added in flow order; (c) the terminal user-visible result. Do NOT emit anything to disk yet.
+
+4. **Confirm overall shape via `AskUserQuestion`.** Use exactly this structure:
+   ```
+   Your request translates to <N> new hops attached to <existing_node_id>.
+   Proposed chain: <H1 title> → <H2 title> → ... → <terminal>.
+   I'll walk you through each hop individually.
+   ```
+   Options: `ready` | `adjust shape` | `wider scope` | `abort`.
+   - `adjust shape` → take free-form feedback via a follow-up question, re-sketch, re-confirm.
+   - `wider scope` → the flow graph is too narrow. Log a concern to `concerns.md` requesting flow-mapper re-run with expanded scope, then STOP R2 until scope is resolved.
+   - `abort` → stop the run.
+
+5. **Node-by-node confirmation loop** — one `AskUserQuestion` per proposed new hop, in `flow_position` order:
+   ```
+   Hop {N} of {total}:
+     Title: {short description}
+     File: {target file path, relative to project_root}
+     Change kind: {new-type|new-method|new-file|new-field|new-route|new-line|modify-method}
+     Upstream: {existing node_id from flow graph, OR previous hop ID, OR external:<description>}
+       {one-line prose of what upstream produces}
+     This hop's produces: {new node_id(s) this hop will create}
+     Downstream (if any): {next hop's ID, or "user-visible end state"}
+     Pattern to mirror (if applicable): {existing node_id with the same kind in the graph}
+       {quote the description field of that node verbatim — teammate will need it later}
+   ```
+   Options: `y` | `adjust` | `reject` | `why?`.
+   - `y` → PIN the hop. Append to your in-memory delta working copy. Move to next hop.
+   - `adjust` → take free-form feedback via a follow-up question. Rework the hop (upstream, fields, file, pattern). Re-propose. Loop until user says `y`.
+   - `reject` → drop the hop. Later hops that depended on it need re-sketching. Tell the user which downstream hops are affected and re-sketch those branches starting from the nearest surviving upstream.
+   - `why?` → answer with the reasoning: what upstream produces, what downstream needs, why this middle node is necessary. Then re-ask.
+
+6. **Transcript discipline.** After each `AskUserQuestion` returns, append the Q + answer verbatim to `{session_dir}/transcript.md` using the existing Forge A-NNN / Q-NNN convention. Never paraphrase; never batch.
+
+7. **Pattern-description honesty.** When a hop proposal says "Pattern to mirror: <node>", `Read` the sibling node's anchor file region BEFORE proposing, and include the real code excerpt — not a paraphrase of the flow graph's description. If the graph's description disagrees with what you see in code, trust the code, update the proposal, and flag a graph-quality concern in `concerns.md` for later flow-mapper improvement.
+
+8. **Validate the delta before emitting.** After the last hop is pinned, verify the V3 well-formedness rules (FOUNDRY-V3-DESIGN.md §6.2):
+   1. Every `consumes.ref` of kind `existing` resolves to a node in the flow graph.
+   2. Every `consumes.ref` of kind `packet` references a previously-pinned hop.
+   3. `depends_on` is a DAG with no cycles.
+   4. No packet `produces` a node_id colliding with an existing graph node.
+   5. Every packet has at least one `consumes`.
+   6. At least one packet has `flow_position == 1`.
+   If any check fails, identify the broken hop and re-interview just that hop with the user. Do NOT emit a malformed delta.
+
+9. **Emit `flow-delta.json`.** Use the `Write` tool to create `{survey_dir}/flow-delta.json` with the schema in FOUNDRY-V3-DESIGN.md §3.2. Include `user_intent_summary`, `packets[]` (with `consumes`, `produces`, `depends_on`, `terminal_slice`), `schema_version: "v3.0"`, `flow_graph_ref: "flow-graph.json"`, `generated_at`.
+
+**CRITICAL: no subagent for R2.** If you catch yourself about to `Agent(subagent_type="forge:flow-interviewer", ...)` or similar, STOP. That is the failure mode we are specifically avoiding. Subagents have no `AskUserQuestion`. The `flow-interviewer.md` file is a methodology reference; you execute the methodology yourself.
+
+**If the user asks to fast-forward (batch-confirm remaining hops):** offer a single `AskUserQuestion` showing all remaining proposed hops as one block, with options `confirm all` / `pick specific hops to review`. Log the override in `concerns.md` so we know they skipped node-by-node.
+
+**If you cannot reach the user** (e.g., non-interactive runtime — `claude --print` with no stdin, CI pipeline, stdin redirected from nowhere): abort R2 with an explicit error rather than making forced decisions. V3 brownfield requires interactivity. The error message should tell the user to re-run in an interactive session OR to use `--greenfield` / `--cosmetic` mode which don't require R2 interaction.
 
 **V2-specific R2 rules that still apply in brownfield:**
 - VERBATIM TRANSCRIPT: every question and answer goes to `transcript.md`. Format continues A-NNN / Q-NNN.

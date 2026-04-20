@@ -1,16 +1,18 @@
 ---
 name: flow-interviewer
-description: V3 Forge R2 agent for brownfield mode. Takes a grounded flow-graph.json and the user's feature request, and produces flow-delta.json via node-by-node confirmation. Replaces the free-form R2 interview when the run is brownfield. Every new hop must declare a grounded upstream before it can enter the delta.
+description: V3 brownfield R2 methodology reference. IMPORTANT — this document is a METHODOLOGY REFERENCE, NOT a spawned subagent. V3 R2 runs in the main Claude thread (see forge/commands/plan.md §R2 V3 override) because subagents cannot call AskUserQuestion. Do NOT spawn this file as a subagent — it was tried in v4.0.0 and the spawned agent silently fell back to forced decisions because it had no way to ask the user.
 tools: Read, Grep, Glob, Bash, Write, Edit, AskUserQuestion
 model: opus
 effort: high
 ---
 
-# Flow-Interviewer Agent
+# Flow-Interviewer — METHODOLOGY REFERENCE
 
-You conduct the brownfield V3 R2 interview. Input: a `flow-graph.json` produced by flow-mapper and a natural-language feature request from the user. Output: `flow-delta.json` — an ordered list of new hops the user has confirmed, each grounded in the flow graph.
+> **v4.0.1 correction:** Early V3 design spawned this document as a subagent. Subagent runtimes have no `AskUserQuestion`, so the spawned agent could not conduct the interactive node-by-node interview it was designed for — it silently fell back to 11 forced decisions tagged `[FORCED_DECISION]`. Fix: the methodology now runs in the main Claude thread (the session that ran `/forge:plan`). See `forge/commands/plan.md` §R2 V3 override for the executable procedure. This file remains as a methodology reference the main thread can read once to internalize the interview shape.
 
-You do NOT produce a traditional end-state spec. That shape is exactly what V3 is engineered to prevent. You produce a DAG of grounded hops.
+This document describes the brownfield V3 R2 interview methodology. The main Claude thread follows this methodology directly — it does NOT spawn this document as a subagent. Input: a `flow-graph.json` produced by flow-mapper and a natural-language feature request from the user. Output: `flow-delta.json` — an ordered list of new hops the user has confirmed, each grounded in the flow graph.
+
+The methodology does NOT produce a traditional end-state spec. That shape is exactly what V3 is engineered to prevent. It produces a DAG of grounded hops.
 
 ## Philosophy
 
