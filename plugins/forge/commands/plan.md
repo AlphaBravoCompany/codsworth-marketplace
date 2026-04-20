@@ -1,7 +1,7 @@
 ---
 description: "Start a codebase-aware specification interview for a feature"
-argument-hint: "FEATURE_NAME [--context FILE] [--output-dir DIR] [--no-survey] [--focus DIRS] [--first-principles]"
-allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-forge.sh:*)", "Bash(python3:*)", "AskUserQuestion", "Read", "Write", "Edit", "Glob", "Grep", "Agent"]
+argument-hint: "FEATURE_NAME [--context FILE] [--output-dir DIR] [--no-survey] [--focus DIRS] [--first-principles] [--brownfield] [--greenfield] [--cosmetic]"
+allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/setup-forge.sh:*)", "Bash(python3:*)", "Bash(find:*)", "Bash(wc:*)", "AskUserQuestion", "Read", "Write", "Edit", "Glob", "Grep", "Agent"]
 hide-from-slash-command-tool: "true"
 ---
 
@@ -14,6 +14,36 @@ Execute the setup script to initialize the research + interview session:
 ```
 
 You are now conducting a codebase-aware specification interview. Follow the instructions provided by the setup script exactly.
+
+## MODE DETECTION (R-pre) — v3.0.0+
+
+Before R0, detect which pipeline this run uses. Three modes:
+
+| Mode | When | Pipeline |
+|---|---|---|
+| **`brownfield`** | existing codebase, flow-shaped request | V3: flow-mapper → flow-interviewer → flow-delta.json (plus spec.md for compatibility) |
+| **`greenfield`** | empty or near-empty target, flow-shaped request | V2 pipeline unchanged (end-state-first is correct when there is no upstream to honor) |
+| **`cosmetic`** | non-flow-shaped request (styling, copy, deps, docs, minor refactor) in any codebase | V2 pipeline, no flow mapping |
+
+**Detection procedure:**
+
+1. If `--brownfield`, `--greenfield`, or `--cosmetic` flag was passed → use that mode verbatim. Skip auto-detection.
+2. Otherwise, auto-detect:
+   - Count relevant-language source files under target paths (Go `*.go`, TS/JS `*.ts|*.tsx|*.js|*.jsx`, Python `*.py`, Rust `*.rs`, excluding tests, vendored code, `node_modules/`).
+     ```bash
+     find "${PROJECT_ROOT}" -type f \( -name "*.go" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.jsx" -o -name "*.py" -o -name "*.rs" \) \
+       -not -path "*/vendor/*" -not -path "*/node_modules/*" -not -path "*/target/*" -not -path "*/__pycache__/*" \
+       -not -name "*_test.go" -not -name "*.test.ts" -not -name "*.test.tsx" -not -name "*.spec.ts" \
+       | wc -l
+     ```
+   - If count ≤ 20 → default `greenfield`.
+   - Else → read the user's feature-name / initial prompt. If the request is flow-shaped (adds a new feature, new endpoint, new page, new data flow, new module) → default `brownfield`. If it is cosmetic (styling, copy edit, README update, dependency bump, minor refactor with no behavioral change) → default `cosmetic`.
+3. **Confirm with the user via AskUserQuestion** — always. Show the detected mode, the file count, and a one-line rationale. Options: `confirm` | `force-greenfield` | `force-brownfield` | `force-cosmetic` | `abort`.
+4. Record the chosen mode to `state.md` as `mode: brownfield|greenfield|cosmetic` before proceeding.
+
+**If mode is `greenfield` or `cosmetic`:** follow the V2 pipeline documented below (R0 → R4) unchanged. Stop reading this section.
+
+**If mode is `brownfield`:** follow the V3 overrides in §V3 BROWNFIELD OVERRIDES below. The V2 phase sections remain as reference for the parts V3 does not override (R1 SYNTHESIZE, R1.5 RESEARCH, R4 VALIDATE are all shared).
 
 ## PHASE EXECUTION ORDER
 
@@ -226,3 +256,97 @@ After outputting `<promise>SPEC FORGED</promise>`, you MUST stop. Do not:
 - Run any commands
 
 The spec is the deliverable. Foundry builds it.
+
+---
+
+## V3 BROWNFIELD OVERRIDES (v3.0.0+)
+
+Applies only when R-pre MODE DETECTION set `mode: brownfield`. These overrides replace specific V2 phases with V3 equivalents. Phases not listed here (R1 SYNTHESIZE, R1.5 RESEARCH, R4 VALIDATE) run as documented above.
+
+**Why V3 exists, in one line:** end-state-first specs cause downstream teammates to fabricate plausible-sounding middle plumbing backward from the final feature. V3 replaces the end-state spec with a grounded flow graph plus a node-by-node confirmed delta — the attention anchor is the real system, not the imagined endpoint. Full rationale: see `${CLAUDE_PLUGIN_ROOT}/../foundry/FOUNDRY-V3-FLOW-REVERSAL-DESIGN.md`. Authoritative schema: `${CLAUDE_PLUGIN_ROOT}/../foundry/FOUNDRY-V3-DESIGN.md`.
+
+### R0 — V3 override: FLOW-MAP (replaces R0.A SURVEY)
+
+In brownfield mode, R0 produces a grounded flow graph instead of the four-agent codebase survey. R0.B DOMAIN (ecosystem research) still runs in parallel.
+
+**Procedure:**
+
+1. Spawn ONE `flow-mapper` agent (full content of `${CLAUDE_PLUGIN_ROOT}/../foundry/agents/flow-mapper.md` as prompt, or `subagent_type: "foundry:flow-mapper"` if registered).
+2. Input to flow-mapper:
+   - `project_root`: the target codebase.
+   - `scope_hint`: natural-language description of the subsystem the user's feature will touch. Derive from the feature name + any `--focus` dirs. If you cannot derive a tight scope, ask the user via AskUserQuestion before spawning.
+   - `run_dir`: the Forge session's survey directory.
+   - `depth_cap: 6`, `size_cap: 120` unless user-overridden.
+3. In parallel: spawn the `domain-scout` agent as in V2 R0.B.
+4. Wait for both to complete.
+5. Flow-mapper writes `flow-graph.json` to the survey directory. Validate it opens and the `validation: "passed"` summary was returned. If `scope_exceeded: true`, ask the user to narrow the scope and re-run — do not proceed with an incomplete graph.
+
+**Important:** the four V2 Explore agents (architecture, data, surface, infra) do NOT run in V3 brownfield. Their output (codebase reality) is captured structurally by the flow graph. Preserve only domain-scout's `domain-orientation.md` for R1 SYNTHESIZE.
+
+### R1 — shared with V2
+
+R1 SYNTHESIZE runs unchanged. It reads `domain-orientation.md` + `flow-graph.json` (instead of the four survey files) and writes `reality.md`. The reality doc summarizes the flow graph's observations (node count, entry points, concerns logged by flow-mapper) plus the domain-scout findings.
+
+### R1.5 — shared with V2
+
+R1.5 RESEARCH runs unchanged. Same targeted stale-knowledge invalidation.
+
+### R2 — V3 override: FLOW-INTERVIEW (replaces V2 free-form interview)
+
+In brownfield mode, R2 is conducted by the `flow-interviewer` agent. It does node-by-node confirmation against the flow graph.
+
+**Procedure:**
+
+1. Spawn ONE `flow-interviewer` agent (full content of `${CLAUDE_PLUGIN_ROOT}/agents/flow-interviewer.md` as prompt, or `subagent_type: "forge:flow-interviewer"` if registered).
+2. Input to flow-interviewer:
+   - `project_root`, `flow_graph_path` (from R0), `user_request` (the feature description + any prior context), `run_dir`, `scope_hint`, `session_state_path` (for transcript continuity).
+3. The flow-interviewer runs an interactive AskUserQuestion loop:
+   - Proposes each new hop one at a time.
+   - Pins hops on user `y`, adjusts on `adjust`, drops on `reject`.
+   - Records every Q/A verbatim to `transcript.md` using the existing A-NNN / Q-NNN convention.
+4. On completion, flow-interviewer emits `flow-delta.json` to `run_dir`.
+
+**V2-specific R2 rules that still apply in brownfield:**
+- VERBATIM TRANSCRIPT: every question and answer goes to `transcript.md`. Format continues A-NNN / Q-NNN.
+- ARCHITECTURAL PLACEMENT DETECTION: when the user's answer describes where code lives (not just what it does), tag the A-NNN with `[ARCH_INVARIANT]`. These become `## Global Invariants` entries in the compatibility spec.md emitted in R3. (Flow-delta's grounding makes placement rules LESS critical than in V2 — since every new node has a declared file — but they still help.)
+- spec_type classification: still record as GREENFIELD | MIGRATION | BUG_FIX | REFACTOR in `state.md`. Brownfield-mode is orthogonal to spec_type — a brownfield run can still be a MIGRATION.
+- MIGRATION MODE ENFORCEMENT: source inventory and destination naming rule still required for MIGRATION spec_type. Flow-delta carries coverage_list on each packet for the same purpose.
+
+**V2-specific R2 rules that DO NOT apply:**
+- Multi-round adaptive interview: the flow-interviewer's node-by-node loop replaces this.
+- Spec drafting via incremental Write calls: flow-interviewer writes a delta, not a spec body.
+- REQUIREMENT CLASSIFICATION (Locked/Flexible/Informational): in brownfield, the packet's file + consumes + produces + pattern-to-mirror carry the locked constraints structurally. R3 below still emits a compatibility spec.md with classification for Foundry V2 compatibility, but it is derived from the delta, not driven by it.
+
+### R3 — V3 override: DELTA + COMPATIBILITY SPEC
+
+When the user says "done" / "finalize" in brownfield:
+
+1. Confirm `flow-delta.json` exists and passes validation (schema + well-formedness per FOUNDRY-V3-DESIGN.md §6.2).
+2. **Emit compatibility `spec.md`** — generated deterministically from the flow-delta:
+   - `Problem Statement`: the user_intent_summary from the delta.
+   - `Scope → In Scope`: one bullet per packet's terminal_slice.
+   - `Requirements → Locked`: one LR-NNN per packet, quoting the packet's title, with `[from P<id>]` citation.
+   - `File Change Map`: one row per packet (file + change_kind + consumes/produces summary).
+   - `Observable Truths`: derived from the delta's terminal_slices (for Foundry's assayer, which still reads spec.md).
+   - `## Flow Delta Reference`: path to flow-delta.json. This is the signal to Foundry's decompose that V3 mode applies.
+   - `## Global Invariants`: any `[ARCH_INVARIANT]`-tagged transcript answers (same as V2).
+   - `## Appendix: Interview Transcript`: verbatim transcript.md (same as V2).
+3. Write both `spec.md` and `flow-delta.json` to the session output directory.
+4. Write the JSON spec with a new top-level field `flow_delta_path` pointing to `flow-delta.json`. Foundry will use this to detect V3 mode.
+5. Run the deterministic gate: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/validate-spec.py <spec.md> <transcript.md>` — if the script reports failures specific to V3 idioms it doesn't understand yet, log them to `concerns.md` and proceed (V3-aware validator is future work).
+6. Delete `state.md`.
+7. Preserve `transcript.md` and `flow-delta.json` — both are authoritative.
+8. Output `<promise>SPEC FORGED</promise>`.
+
+### R4 — shared with V2
+
+R4 VALIDATE runs unchanged. In brownfield it additionally checks:
+- `flow-delta.json` exists and passes schema.
+- Every file referenced in the delta's packets exists in `project_root` (for `modify-*` change_kinds) OR is a valid new path in the same directory tree as existing files (for `new-*` change_kinds).
+- Every packet's `consumes.ref` of kind `existing` resolves to a node in `flow-graph.json`.
+
+### Brownfield failure modes and fallbacks
+
+- **Flow-mapper fails to produce a graph** (returns error or empty): fall back to V2 R0.A (four Explore agents). Log the fallback in `concerns.md`. The user's mode is effectively downgraded to greenfield for this run.
+- **Flow-interviewer cannot translate the request** (user's request requires subsystems not in the flow graph): pause R2, re-spawn flow-mapper with a wider scope_hint, then resume R2.
+- **User wants to override node-by-node confirmation** (prefers big-bang approval): offer to batch-confirm remaining hops via a single AskUserQuestion showing the full proposed delta — but log a concern noting the override.

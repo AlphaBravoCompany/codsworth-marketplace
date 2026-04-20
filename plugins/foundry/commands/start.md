@@ -58,7 +58,9 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
 
 **Plans are prompts.** Decompose authors both the casting manifest AND the complete teammate prompt file for each casting, from the spec as source of truth. The lead at F1/F3 is a router, not an interpreter.
 
-**Procedure:**
+**V3 MODE DETECTION (v3.0.0+):** before decomposing, check whether `spec.md` references a flow delta (look for `## Flow Delta Reference` heading or a `flow_delta_path` field in the JSON spec). If yes → V3 mode: use the V3 packet-derived decomposition procedure below (§F0.5 V3). If no → V2 mode: use the standard procedure immediately below.
+
+**Procedure (V2 mode, unchanged):**
 
 1. Read the spec in full. Read research findings (`research/SUMMARY.md` or `research/*.md`).
 2. **Extract global invariants.** If `spec.md` has a `## Global Invariants` section (or `<global_invariants>` block), copy it verbatim to `manifest.global_invariants` — INCLUDING any `### Architectural Placement` / `### Cross-Cutting Technical Rules` subsections, GI-NNN entries with `[from A-NNN]` citations, and the literal "None — the user gave no explicit placement constraints." sentinel if the forge spec wrote that. Otherwise empty string. **Never paraphrase, never filter, never omit subsections.** Forge v3.4.0+ specs always have this section; if it's missing, the spec was either hand-written or forge failed validation. For forge-generated specs that contain the sentinel, propagate the sentinel verbatim — downstream PROVE/TRACE read it as "no placement rules to enforce for this run." The `<global_invariants>` block in every casting prompt is the only channel through which architectural-placement constraints reach CAST teammates; an empty block when the spec had real constraints means every casting will be built in a constraint-free context and will likely place code in the wrong architectural layer.
@@ -106,6 +108,111 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
 8. **Sizing limits:** single casting ≤ 800 LOC of source material to read, ≤ 1500 LOC of new code. Bigger = more castings, never tighter prompts.
 9. Call `Foundry-Gate(phase='validate')`.
 
+### F0.5 V3: PACKET-DERIVED DECOMPOSE (v3.0.0+)
+
+When the spec references a flow delta, decomposition becomes **deterministic** — each packet in `flow-delta.json` becomes exactly one casting, and each casting's teammate prompt is generated directly from the packet, the flow graph, and the sibling patterns the flow graph anchors.
+
+**Inputs:**
+- `flow-delta.json` — ordered list of packets from Forge V3 R3.
+- `flow-graph.json` — grounded graph from Forge V3 R0 (companion to the delta).
+- `spec.md` — compatibility spec for invariants and appendix.
+- `manifest.mandatory_rules`, `manifest.global_invariants` — extracted as in V2.
+
+**Procedure:**
+
+1. Read `flow-delta.json` and `flow-graph.json`.
+2. Extract `mandatory_rules` and `global_invariants` exactly as in V2 steps 2–3 (verbatim, never paraphrase).
+3. **One packet = one casting.** Do NOT identify domains; the delta already did. Spawn one background Agent per packet to write the casting prompt. Max 5 in parallel, same cadence as V2.
+4. **Each casting manifest entry:**
+   - `id`: the packet ID (`P1`, `P2`, ...).
+   - `title`: the packet's `title`.
+   - `packet`: the full packet JSON verbatim.
+   - `flow_graph_refs`: the anchor records of every `existing` node the packet consumes (copied from `flow-graph.json`).
+   - `sibling_pattern`: auto-selected from the flow graph — the existing node with the same `kind` as the packet's `produces`, nearest in file path. Copy its `description`, `consumes`, `produces` verbatim AND read its body excerpt from the anchored file:line. The body excerpt (not the paraphrased description) is the pattern the teammate mirrors.
+   - `observable_truths`: derived from the packet's `terminal_slice` field (one or two entries, for Foundry's assayer compatibility only). The teammate prompt DOES NOT see these.
+   - `key_files`: exactly one — the packet's `file`.
+   - `must_haves`: V3 does not use truths/artifacts/key_links in the V2 sense. Leave these empty `[]` and rely on the packet's structural fields.
+   - `research_context`: inherited from F0 if relevant, else empty.
+5. **Each `casting-{id}-prompt.md` uses the V3 packet template — NOT the V2 template:**
+
+   ```markdown
+   # Casting {id}: {title}
+
+   <mandatory_rules>
+   {Verbatim manifest.mandatory_rules — byte-identical across every casting}
+   </mandatory_rules>
+
+   <global_invariants>
+   {Verbatim manifest.global_invariants — byte-identical across every casting}
+   </global_invariants>
+
+   <upstream_anchor>
+   FILE YOU WILL MODIFY: {packet.file}
+
+   EXISTING SYMBOLS (verified via grep/LSP, do not modify):
+   {for each consumes.ref of kind "existing": quote the flow_graph node's anchor + description}
+
+   PATTERN: {sibling_pattern.anchor.file}:{sibling_pattern.anchor.line} is your template.
+   Read it. The behavior you will mirror:
+   {verbatim body excerpt from the sibling, copied from the anchored file — NOT paraphrased}
+
+   YOUR UPSTREAM PRODUCES: {for each consumes.ref: the node's produces field verbatim}
+   </upstream_anchor>
+
+   <prerequisite_hops>
+   {for each consumes.ref of kind "packet": list it with a specific grep command}
+
+   VERIFY before writing code:
+   {one grep line per prerequisite}
+   If any symbol is absent, STOP — your dependency chain is broken. Do not invent.
+   </prerequisite_hops>
+
+   <this_hop>
+   {Derived from packet: change_kind + produces + title}
+
+   Produce exactly {N} new symbol(s):
+   {enumerate packet.produces with kind + node_id + expected signature if applicable}
+
+   Behavior, step by step:
+   {auto-generated from the sibling pattern body + packet metadata — this is the one
+    place a small amount of synthesis happens; keep it mechanical, not creative}
+
+   OUT OF SCOPE — do NOT do any of the following (they are other packets):
+   {auto-generated — list every OTHER packet's produces, each as "Do NOT produce X (packet Pn)"}
+   Do NOT touch any file except {packet.file}.
+   </this_hop>
+
+   <downstream_contract>
+   {for each packet that has this packet in its consumes:
+     "Packet {later_id} will consume this via {ref}. Your signature/name/return is the contract; do not change it."}
+   {If terminal (no downstream packet): "This hop terminates the chain. The user-visible surface is {packet.terminal_slice} but this is informational only — your only output is the declared produces."}
+   </downstream_contract>
+
+   <self_check>
+   Before declaring done:
+   {one specific grep command per prerequisite_hops entry}
+   {language-specific build: `go build ./...`, `tsc --noEmit`, `cargo build`, etc.}
+   {language-specific lint}
+   Your produced symbol must NOT yet be called from anywhere the downstream packet will add the call — that is its job, not yours.
+   </self_check>
+
+   ---
+
+   ## Casting Metadata (V3 packet mode)
+
+   **packet:** {full packet JSON}
+   **flow_graph_refs:** {anchors of existing nodes this packet consumes}
+   **sibling_pattern:** {which graph node was chosen as the pattern}
+   **top_conventions:** {3 rules from codebase-mapper if present}
+   ```
+
+6. **Byte-identical `<mandatory_rules>` and `<global_invariants>`** across every V3 casting, same as V2.
+7. **Forbidden phrases** still rejected at F0.9 VALIDATE. "Pick the core", "follow-up PR", etc. still banned.
+8. **Sizing limits:** V3 naturally keeps castings small because each packet touches one file with one change. Flag any packet that would exceed 1500 LOC of new code as a delta-design problem — return to Forge to split the packet, do not try to shrink the prompt.
+9. Call `Foundry-Gate(phase='validate')`.
+
+**What changes in `<spec_requirements>` vs V2:** in V3 there is no `<spec_requirements>` block. The structural blocks above (`<upstream_anchor>`, `<prerequisite_hops>`, `<this_hop>`, `<downstream_contract>`, `<self_check>`) replace it. The teammate has NO end-state description in its attention — only the hop contract. This is the entire V3 reversal; see `FOUNDRY-V3-DESIGN.md` §3.3.
+
 ### F0.9: VALIDATE
 
 Call `Foundry-Validate-Castings` — runs 10 dimensions:
@@ -146,9 +253,10 @@ Call `Foundry-Gate(phase='cast')`.
 4. Even on `ok: true`, YOU must verify each AC has a corresponding artifact in the completion report.
 5. `Foundry-Handoff(event="teammate_to_accepted", ...)` to record acceptance.
 
-### F2: INSPECT (up to 6 parallel streams)
+### F2: INSPECT (up to 7 parallel streams)
 
-- **TRACE** — agent with `agents/tracer.md` (sonnet). Three-level: EXISTS → SUBSTANTIVE → WIRED.
+- **TRACE** — agent with `agents/tracer.md` (sonnet). Upstream wiring: EXISTS → SUBSTANTIVE → WIRED → PLACED.
+- **FLOW_TRACE** — V3 only, when `flow-delta.json` exists. Agent with `agents/flow-tracer.md` (sonnet). Downstream wiring: PRODUCED → CONSUMES_UPSTREAM → SUBSTANTIVE → CHAIN_INTACT. Pairs with TRACE to cover both directions. Primary catcher of "endpoint exists but is disconnected from its declared upstream" — the exact failure V3 is engineered to prevent.
 - **PROVE** — agent with `agents/assayer.md` (opus). Spec-before-code + stub detection + research compliance.
 - **RESEARCH_AUDIT** — agent with `agents/research-auditor.md` (sonnet). Verifies code honors research. Skip if no research + no Informational items.
 - **COVERAGE_DIFF** — MIGRATION only. Agent with `agents/coverage-diff.md` (sonnet). 1:1 source → destination check.

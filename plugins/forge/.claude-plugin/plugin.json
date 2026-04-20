@@ -1,7 +1,7 @@
 {
   "name": "forge",
-  "description": "Codebase-aware specification engine. Researches your code deeply, then conducts a grounded interview to produce foundry-ready specs. Forge plans. Foundry builds.",
-  "version": "3.4.1",
+  "description": "Codebase-aware specification engine. V3 flow-reversal mode (plugin v4.0.0): brownfield runs use flow-mapper + node-by-node flow-interviewer to produce grounded flow deltas instead of end-state specs. Researches your code deeply, conducts a grounded interview, and produces foundry-ready specs (V2) or flow deltas (V3). Forge plans. Foundry builds.",
+  "version": "4.0.0",
   "author": {
     "name": "AlphaBravo"
   }
