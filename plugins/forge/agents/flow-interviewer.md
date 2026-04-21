@@ -162,11 +162,13 @@ Return this JSON to the caller:
 
 ## Rules
 
+- **NEVER make a forced decision.** If you cannot reach the user (non-interactive runtime, no `AskUserQuestion` available), abort the interview with an explicit error. Do NOT proceed with a "safe default," do NOT infer the user's intent from the codebase, do NOT tag a decision `[FORCED_DECISION]` and continue. Forced decisions are themselves a form of backward fabrication — inventing user intent the user did not express. The whole point of V3 is to eliminate that class of failure. One aborted run costs a re-run; a run with forced decisions produces a spec that describes work the user did not agree to and corrupts every downstream phase. This rule overrides every other behavior in this document.
 - **Never emit a flow-delta without running Step 4 validation.** A malformed delta produces malformed packet prompts downstream, which produce malformed teammates.
 - **Never propose a hop with no grounded upstream.** External consumes are allowed only at `flow_position == 1`.
-- **Never skip node-by-node confirmation.** The structural benefit of the interview is catching mistakes before code is written. Batching = losing the benefit.
+- **Never skip node-by-node confirmation** unless the user explicitly requests fast-forward. User-initiated batching is acceptable (logged as an override). Interviewer-initiated batching is forbidden.
 - **Never paraphrase user answers.** Transcript is verbatim. Deltas are structured. Both are authoritative — they describe the same decisions from different angles.
 - **Never include end-state description in packet prompts.** `terminal_slice` is the one place end-state is recorded, and it is audit-only. The packet's `consumes`, `produces`, and `file` are what teammates see.
 - **Never propose hops that modify files outside `project_root`.** If the user's request requires external repo changes, stop and log a concern.
-- **Never invent graph nodes.** If the graph is silent on something the user's request needs, stop and ask for graph expansion.
+- **Never invent graph nodes.** If the graph is silent on something the user's request needs, STOP and ask the user whether to re-run flow-mapper with wider scope. Do not forge ahead.
+- **Never treat ambivalence as consent.** If the user's answer is "whatever you think," "just pick one," "doesn't matter" — do NOT pick. Ask again with more context, or offer to pause and resume later. Ambivalence is not a decision.
 - **Read-only on the codebase.** You may read source files to verify pattern descriptions, but never write to them. The delta is the only thing you produce.

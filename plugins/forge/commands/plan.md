@@ -395,8 +395,23 @@ R4 VALIDATE runs unchanged. In brownfield it additionally checks:
 - Every file referenced in the delta's packets exists in `project_root` (for `modify-*` change_kinds) OR is a valid new path in the same directory tree as existing files (for `new-*` change_kinds).
 - Every packet's `consumes.ref` of kind `existing` resolves to a node in `flow-graph.json`.
 
-### Brownfield failure modes and fallbacks
+### Brownfield failure modes and recovery
 
-- **Flow-mapper fails to produce a graph** (returns error or empty): fall back to V2 R0.A (four Explore agents). Log the fallback in `concerns.md`. The user's mode is effectively downgraded to greenfield for this run.
-- **Flow-interviewer cannot translate the request** (user's request requires subsystems not in the flow graph): pause R2, re-spawn flow-mapper with a wider scope_hint, then resume R2.
-- **User wants to override node-by-node confirmation** (prefers big-bang approval): offer to batch-confirm remaining hops via a single AskUserQuestion showing the full proposed delta — but log a concern noting the override.
+**Hard rule: V3 NEVER makes forced decisions on the user's behalf.** When any step cannot complete as designed, you either ask the user what to do next (`AskUserQuestion`) or abort the run with an explicit error. You never silently degrade, never guess, never "proceed with a safe default" when the user could have told you their actual preference. Forced decisions are themselves a form of backward fabrication — the agent inventing intent the user did not express — and the whole point of V3 is to eliminate that class of failure.
+
+**What to do when things go wrong:**
+
+- **Flow-mapper fails to produce a graph** (returns error, empty, or `scope_exceeded: true`): STOP. Do NOT silently fall back to V2. Ask the user via `AskUserQuestion`:
+  - "Flow-mapper failed / exceeded scope. Options: (a) re-run flow-mapper with a narrower scope_hint, (b) re-run with a wider scope_hint, (c) switch this run to `--greenfield` mode (V2 pipeline), (d) abort."
+  - Execute whichever the user picks. Log the reason in `concerns.md`.
+
+- **Flow graph is incomplete for the user's request** (interview step 3 reveals the request touches subsystems not in the graph): STOP R2. Ask the user via `AskUserQuestion`:
+  - "Your request touches subsystems the flow graph doesn't cover (list them). Options: (a) re-run flow-mapper with a wider scope_hint to include those subsystems, (b) narrow the feature request to what's in the graph, (c) abort."
+
+- **User appears ambivalent or tired mid-interview** (short answers, "whatever you think", "just pick one"): STOP. Do NOT interpret ambivalence as consent. Tell the user: "Node-by-node confirmation requires your input — I cannot make this call for you. Options: (a) take a break and resume later with `/forge:resume`, (b) explicitly pick one of the options I offered, (c) switch to `--greenfield` mode where free-form spec is acceptable, (d) abort." The A-NNN transcript entry for that Q stays blank until the user actually picks.
+
+- **Non-interactive runtime** (no stdin, `claude --print`, CI pipeline, subagent caller): abort R2 immediately with an explicit error. The error message lists the same options above. Brownfield V3 is interactive-only by design.
+
+- **User wants to fast-forward** (volunteers "just confirm them all"): this is a user choice, not a forced decision — the user explicitly asked. Offer a single `AskUserQuestion` showing every remaining proposed hop as one block, options `confirm all` / `pick specific hops to review` / `abort`. Log the fast-forward in `concerns.md` so the session transcript records that node-by-node was skipped by user request.
+
+**There is no failure mode in which R2 proceeds without the user's explicit input on each hop.** If the runtime cannot support that, the run aborts. The cost of aborting is one re-run; the cost of proceeding with forced decisions is a spec that describes work the user did not agree to, which corrupts every downstream phase.
