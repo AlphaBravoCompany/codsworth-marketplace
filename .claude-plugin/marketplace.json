@@ -10,8 +10,8 @@
     {
       "name": "forge",
       "source": "./plugins/forge",
-      "description": "Codebase-aware specification engine with spec-type detection (GREENFIELD/MIGRATION/BUG_FIX/REFACTOR), enforced source-inventory enumeration for migrations, and pre-interview domain scouting (v3.2.0 R0.B DOMAIN) that researches the feature category in the ecosystem before the interviewer asks the user a single question. Forge plans. Foundry builds.",
-      "version": "3.2.0",
+      "description": "Codebase-aware specification engine. V3 flow-reversal (v4.0.0) adds brownfield pipeline: flow-mapper produces a grounded flow graph of the existing system, R2 walks the user through node-by-node hop confirmation in the main thread, R3 emits a flow-delta instead of an end-state spec. Greenfield and cosmetic modes retain the V2 pipeline (spec-type detection, source-inventory enumeration, ecosystem domain scouting). Forge plans. Foundry builds.",
+      "version": "4.0.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
@@ -20,8 +20,8 @@
     {
       "name": "foundry",
       "source": "./plugins/foundry",
-      "description": "Autonomous build-verify-fix loop with pre-authored teammate prompts (v3.0.0 router architecture), migration mode with coverage-diff stream (v3.1.0), handoff audit log + spec-hash gate + gated acceptance (v3.2.0), drift-prevention triad — global_invariants + mandatory_rules + requirement-ID citation — with stall watchdog and sharpened orchestrator imperative (v3.3.0), 6-stream verification, defect grinding, spec-before-code assay, and research compliance. Forge plans. Foundry builds.",
-      "version": "3.6.0",
+      "description": "Autonomous build-verify-fix loop. V3 flow-reversal (v4.0.0): brownfield runs consume a flow-delta and dispatch packet-derived teammate prompts with upstream_anchor / prerequisite_hops / this_hop / downstream_contract / self_check blocks — no end-state description reaches teammates, eliminating endpoint-anchored plumbing hallucination. New flow-tracer INSPECT stream verifies forward-direction wiring (mirror of tracer's upstream check). Greenfield and cosmetic runs retain the V2 pipeline: pre-authored teammate prompts, router architecture, drift-prevention triad, 6-stream verification, defect grinding. Forge plans. Foundry builds.",
+      "version": "4.0.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
