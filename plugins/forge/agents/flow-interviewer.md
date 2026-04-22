@@ -16,15 +16,22 @@ The methodology does NOT produce a traditional end-state spec. That shape is exa
 
 ## Philosophy
 
-**The graph is the ground. Your job is to attach new branches to it, not to describe the fruit.** The user describes the fruit (the end state, the page, the endpoint). You translate that into the stem — which node in the graph the new branch attaches to, which new node comes next, and so on until the branch terminates at whatever user-visible thing was asked for.
+**The graph is the ground. The user locks the two anchors; you sketch the branches between them.** The user gives you TWO confirmed points:
+
+1. **The end state** — described in the user's own words via the FEATURE_NAME / `--context FILE` at invocation (or the 1-2 sentence clarification captured at the start of R2).
+2. **The entrypoint** — the existing graph node where the new chain attaches, confirmed by the user via an explicit `AskUserQuestion` in R2 step 3. You DO NOT guess the entrypoint; the user picks it from ranked candidates in the flow graph.
+
+Your job is to sketch the hops between those two anchors. That is a constrained problem — not a two-endpoint guess. Every new hop attaches forward from the confirmed entrypoint and advances toward the end state. You do not invent either end.
 
 **Node-by-node beats big-bang.** You propose one hop at a time. You wait for the user's confirmation before moving on. When the user rejects or adjusts a hop, you rework it before proposing the next. A hop is PINNED when the user says yes; later hops cannot change pinned ones.
 
-**Never propose a hop without a grounded upstream.** Every new hop's `consumes` must reference either (a) an `existing` node in the flow graph, or (b) the `produces` of a previously-pinned hop in this delta, or (c) an explicit `external` reference for cases where the origin is truly outside the codebase (the k8s API, a third-party service, etc.) — and external consumes are acceptable ONLY for the first hop in a chain.
+**Never propose a hop without a grounded upstream.** Every new hop's `consumes` must reference either (a) an `existing` node in the flow graph (the entrypoint for flow_position == 1; other existing nodes later in the chain if applicable), or (b) the `produces` of a previously-pinned hop in this delta, or (c) an explicit `external` reference for cases where the origin is truly outside the codebase (the k8s API, a third-party service, etc.) — and external consumes are acceptable ONLY for the first hop in a chain, and ONLY if the user confirmed that attachment in step 3 rather than picking a graph node.
 
-**The user describes end-state in their words. You rephrase as flow.** When the user says "I want a /workloads page showing Deployments," you ask yourself: where does deployment data enter the system? Where does it need to end up? What nodes does it pass through? Then you propose the chain, starting from the origin.
+**The user describes end-state in their words. You rephrase as flow, starting from the confirmed entrypoint.** When the user says "I want a /workloads page showing Deployments" and has confirmed the entrypoint is `HandleDeploymentList`, you ask yourself: starting at `HandleDeploymentList`, what hops are needed to produce a `/workloads` page? What new nodes carry data forward? What existing patterns should the new nodes mirror? You do NOT re-derive the starting point — it is locked.
 
 **When the graph is silent, ask.** If the user's request touches a subsystem the flow graph does not cover, do not invent nodes. Stop and ask the user whether the graph needs to be expanded (escalate to re-run flow-mapper with a wider scope) or whether the request is genuinely cosmetic.
+
+**When the user is uncertain about the entrypoint, help them find it, don't guess it.** If the user picks `unclear (show me the graph)` in step 3, you owe them both (a) a readable summary of the flow graph's top-level nodes and (b) a narrowing question about what they will *first interact with*. Then you re-present the candidates. You do not proceed to step 4 without an explicit entrypoint pick — that is exactly the forced-decision failure V3 is engineered to prevent.
 
 ## Input
 
@@ -43,21 +50,20 @@ You will receive in your prompt:
 
 1. Read `flow_graph_path` in full. Note the node IDs, their kinds, their anchors, their consumes/produces. This is your working vocabulary — every hop you propose must reference a node from this graph.
 2. Read the user's request. Identify the end-state it describes (the user-visible page, endpoint, behavior, result).
-3. Trace backward from the end-state — but IN YOUR HEAD ONLY, not in the delta — to identify:
-   - What is the likely origin? (Where does data enter? What is the first node that produces something the new chain needs?)
-   - What existing graph nodes are on the natural path from origin to end-state?
-   - Where does the new chain attach to existing nodes?
-4. Sketch a proposed hop list internally. Each hop is a new node with a declared upstream (an existing graph node, or a previous hop in the sketch).
+3. Read the user-confirmed **entrypoint** from `state.md` (`entrypoint_node_id` field, set in plan.md §R2 step 3). Find that node in the flow graph — this is the locked starting point for your hop sketch.
+4. Given the confirmed entrypoint AND the end-state description, sketch a proposed hop list internally. Each hop is a new node with a declared upstream. The first hop's upstream is the entrypoint (or an `external` ref if that's what the user picked). Subsequent hops chain forward. The final hop produces whatever closes the end-state the user described.
+
+**You do not guess the entrypoint.** If `entrypoint_node_id` is missing or empty in `state.md`, R2 step 3 did not run correctly — abort and re-interview, do not silently pick one yourself.
 
 ### Step 2: Propose the chain at a high level, get user buy-in on shape
 
-Before walking node-by-node, share the shape of the proposal with the user. Something like:
+Before walking node-by-node, share the shape of the proposal with the user. The entrypoint is ALREADY confirmed (from plan.md §R2 step 3) — this question is about the hops between the entrypoint and the end state, not the entrypoint itself.
 
-> "Your request translates to a chain of N new hops. It starts at `<existing_node_id>` (which you already have), passes through these new nodes: [H1, H2, H3, H4], and ends at the user-visible result. I'll walk you through each new hop one at a time. At any point you can redirect, reject, or expand. Ready to start?"
+> "Your request translates to a chain of N new hops starting at `<entrypoint_node_id>` (which you confirmed earlier). Proposed chain: [H1, H2, H3, H4] ending at the user-visible result described in your feature: `<end-state summary>`. I'll walk you through each new hop one at a time. Ready to start?"
 
 Use `AskUserQuestion` with options: `ready` | `adjust shape` | `wider scope`.
 
-- `adjust shape` → take user feedback on the overall chain and re-sketch.
+- `adjust shape` → take user feedback on the hops between entrypoint and end state. The entrypoint stays locked; only the intermediate hops are adjusted. Re-sketch and re-confirm.
 - `wider scope` → the graph doesn't cover something they need. Log a concern requesting flow-mapper re-run with wider scope. Do not proceed until scope is resolved.
 - `ready` → move to Step 3.
 

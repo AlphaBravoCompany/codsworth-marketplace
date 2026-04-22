@@ -1,7 +1,7 @@
 {
   "name": "foundry",
-  "description": "Build-verify-fix loop for Claude Code. V3 flow-reversal architecture (plugin v4.0.0): brownfield runs use grounded flow graphs + node-by-node deltas instead of end-state specs, eliminating endpoint-anchored plumbing hallucination. Greenfield/cosmetic runs unchanged. 5-stream verification (TRACE, FLOW_TRACE, PROVE, SIGHT, TEST). Forge plans. Foundry builds.",
-  "version": "4.0.0",
+  "description": "Build-verify-fix loop for Claude Code. V3 flow-reversal architecture (plugin v4.0.0): brownfield runs use grounded flow graphs + node-by-node deltas instead of end-state specs. v4.1.0 teammate upgrade: methodical deliberation procedures (read floor, approach deliberation, blast radius, competing hypotheses) replace anti-depth guards — tuned for correctness over wall-clock speed. Greenfield/cosmetic runs unchanged. 5-stream verification (TRACE, FLOW_TRACE, PROVE, SIGHT, TEST). Forge plans. Foundry builds.",
+  "version": "4.1.0",
   "author": {
     "name": "AlphaBravo"
   }

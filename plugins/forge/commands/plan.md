@@ -301,22 +301,71 @@ The methodology is documented in `${CLAUDE_PLUGIN_ROOT}/agents/flow-interviewer.
 
 1. **Load the flow graph into context.** Use the `Read` tool to read `{survey_dir}/flow-graph.json` in full. Note the node IDs, kinds, anchors, consumes/produces fields. This becomes your working vocabulary for the interview.
 
-2. **Capture or confirm the user's request.** If the plan command's FEATURE_NAME is a rich description (e.g., "Add a Services page..."), proceed. If it's a thin slug (e.g., "add-services-page"), ask the user via `AskUserQuestion` for a 1–2 sentence description of what they want to build.
+2. **Capture or confirm the user's request.** If the plan command's FEATURE_NAME is a rich description (e.g., "Add a Services page..."), proceed. If it's a thin slug (e.g., "add-services-page"), ask the user via `AskUserQuestion` for a 1–2 sentence description of what they want to build. **This description is the end state.** Forge does not re-ask for the end state — the user has already told you what they want built. Your job from here is to locate the entrypoint and sketch the hops between the two.
 
-3. **Sketch the proposed hop chain internally.** Given the flow graph and the user's request, identify: (a) the likely origin — which existing graph node is the natural attachment point; (b) the new nodes that need to be added in flow order; (c) the terminal user-visible result. Do NOT emit anything to disk yet.
+3. **Confirm the entrypoint via `AskUserQuestion`** (v4.1.0 — mandatory). Before sketching any hops, the user must lock the **entrypoint**: the existing graph node where the new chain attaches. This is the single most error-prone decision if Claude guesses it, so it is asked explicitly, not inferred.
 
-4. **Confirm overall shape via `AskUserQuestion`.** Use exactly this structure:
+   **Procedure:**
+
+   a. Rank nodes from `flow-graph.json` by relevance to the user's end-state description. Consider:
+      - Nodes whose `description` mentions terms from the feature request.
+      - Nodes that are plausible entry points (handlers, route registrations, entry functions) given the request shape.
+      - Nodes near files the user named explicitly (via `--focus` or in the request itself).
+
+   b. Pick the top 3-5 candidates. For each, record the node ID, file:line from its `anchor`, and a one-line description from the graph.
+
+   c. Call `AskUserQuestion` with this exact shape:
+      ```
+      Question: Where does this new work attach to the existing flow?
+      Your end state: "<user's feature description, one sentence>"
+      Pick the entrypoint — the existing code location where your new chain begins.
+
+      Options (ranked by relevance from flow-graph.json):
+        - <node_id_1>: <description> (<file>:<line>)
+        - <node_id_2>: <description> (<file>:<line>)
+        - <node_id_3>: <description> (<file>:<line>)
+        - other: I know where it attaches but it's not listed
+        - unclear: show me the graph, I need to see my options
+        - abort
+      ```
+
+   d. Handle response:
+
+      - **User picks a ranked candidate** → record the chosen node ID to `state.md` as `entrypoint_node_id: <id>`. Proceed to step 4.
+
+      - **`other`** → follow-up `AskUserQuestion`: *"Tell me the file or symbol where the new work attaches. Example: `handlers/deployment.go:HandleList`."* Verify the answer matches a node's `anchor` field in `flow-graph.json` (grep the anchor field for the user-named symbol). If match → record and proceed. If no match → another follow-up with options: `re-run flow-mapper with wider scope` | `pick from listed candidates anyway` | `abort`. NEVER silently accept an unmatched anchor — that is exactly the forced-decision failure V3 is engineered to prevent.
+
+      - **`unclear`** → respond with TWO pieces of information, then re-ask:
+        1. **Graph summary.** Output a compact human-readable summary of `flow-graph.json` — list the top 10-15 nodes by their `description`, grouped by `kind` (handlers, entry functions, routes, etc.), with `anchor` (file:line) for each. Let the user see the shape of the codebase without dumping raw JSON.
+        2. **Narrowing question.** In the same response, ask: *"What will a user *first interact with* in your new feature? Clicking a button? Hitting a URL? A background job firing? A new API endpoint being called? Tell me that and we'll work backward from there to find the graph node."* Get a free-text answer via another `AskUserQuestion`.
+        Then re-present the entrypoint options, this time ranked with the narrowing info in mind (e.g., if the user said "clicking a button on the settings page," promote sidebar/settings-related nodes to the top).
+
+      - **`abort`** → stop R2, delete no state, let the user `/forge:resume` later.
+
+   e. Append the Q and A verbatim to `transcript.md` using the A-NNN / Q-NNN convention.
+
+   f. Record the confirmed entrypoint to `state.md`:
+      ```yaml
+      entrypoint_node_id: "<chosen node_id>"
+      entrypoint_anchor: "<file:line from the node's anchor field>"
+      ```
+
+4. **Sketch the proposed hop chain internally.** Given the flow graph, the user's end-state description, AND the user-confirmed entrypoint from step 3, sketch the hops needed to go from the entrypoint to the end state. You now have TWO locked anchors — the entrypoint (just confirmed) and the end state (from the feature/context) — so the sketch is a constrained problem, not a two-endpoint guess.
+
+   Identify: (a) which new nodes need to be added in flow order between the entrypoint and the end state; (b) the terminal — what user-visible thing closes the chain. Do NOT emit anything to disk yet; this is an internal working copy.
+
+5. **Confirm overall shape via `AskUserQuestion`.** Use exactly this structure:
    ```
-   Your request translates to <N> new hops attached to <existing_node_id>.
+   Your request translates to <N> new hops attached to <entrypoint_node_id> (confirmed in previous question).
    Proposed chain: <H1 title> → <H2 title> → ... → <terminal>.
    I'll walk you through each hop individually.
    ```
    Options: `ready` | `adjust shape` | `wider scope` | `abort`.
-   - `adjust shape` → take free-form feedback via a follow-up question, re-sketch, re-confirm.
+   - `adjust shape` → take free-form feedback via a follow-up question, re-sketch, re-confirm. The entrypoint stays locked; only the hops between entrypoint and end state are adjusted.
    - `wider scope` → the flow graph is too narrow. Log a concern to `concerns.md` requesting flow-mapper re-run with expanded scope, then STOP R2 until scope is resolved.
    - `abort` → stop the run.
 
-5. **Node-by-node confirmation loop** — one `AskUserQuestion` per proposed new hop, in `flow_position` order:
+6. **Node-by-node confirmation loop** — one `AskUserQuestion` per proposed new hop, in `flow_position` order:
    ```
    Hop {N} of {total}:
      Title: {short description}
@@ -335,20 +384,21 @@ The methodology is documented in `${CLAUDE_PLUGIN_ROOT}/agents/flow-interviewer.
    - `reject` → drop the hop. Later hops that depended on it need re-sketching. Tell the user which downstream hops are affected and re-sketch those branches starting from the nearest surviving upstream.
    - `why?` → answer with the reasoning: what upstream produces, what downstream needs, why this middle node is necessary. Then re-ask.
 
-6. **Transcript discipline.** After each `AskUserQuestion` returns, append the Q + answer verbatim to `{session_dir}/transcript.md` using the existing Forge A-NNN / Q-NNN convention. Never paraphrase; never batch.
+7. **Transcript discipline.** After each `AskUserQuestion` returns, append the Q + answer verbatim to `{session_dir}/transcript.md` using the existing Forge A-NNN / Q-NNN convention. Never paraphrase; never batch.
 
-7. **Pattern-description honesty.** When a hop proposal says "Pattern to mirror: <node>", `Read` the sibling node's anchor file region BEFORE proposing, and include the real code excerpt — not a paraphrase of the flow graph's description. If the graph's description disagrees with what you see in code, trust the code, update the proposal, and flag a graph-quality concern in `concerns.md` for later flow-mapper improvement.
+8. **Pattern-description honesty.** When a hop proposal says "Pattern to mirror: <node>", `Read` the sibling node's anchor file region BEFORE proposing, and include the real code excerpt — not a paraphrase of the flow graph's description. If the graph's description disagrees with what you see in code, trust the code, update the proposal, and flag a graph-quality concern in `concerns.md` for later flow-mapper improvement.
 
-8. **Validate the delta before emitting.** After the last hop is pinned, verify the V3 well-formedness rules (FOUNDRY-V3-DESIGN.md §6.2):
+9. **Validate the delta before emitting.** After the last hop is pinned, verify the V3 well-formedness rules (FOUNDRY-V3-DESIGN.md §6.2):
    1. Every `consumes.ref` of kind `existing` resolves to a node in the flow graph.
    2. Every `consumes.ref` of kind `packet` references a previously-pinned hop.
    3. `depends_on` is a DAG with no cycles.
    4. No packet `produces` a node_id colliding with an existing graph node.
    5. Every packet has at least one `consumes`.
    6. At least one packet has `flow_position == 1`.
+   7. The packet at `flow_position == 1` has a `consumes.ref` matching `entrypoint_node_id` from `state.md` (kind `existing`), OR has an `external` consumes (e.g., k8s API, third-party webhook). An entrypoint confirmed in step 3 that is not consumed anywhere in the delta means the chain does not actually attach where the user said it would — re-interview step 3 or step 4.
    If any check fails, identify the broken hop and re-interview just that hop with the user. Do NOT emit a malformed delta.
 
-9. **Emit `flow-delta.json`.** Use the `Write` tool to create `{survey_dir}/flow-delta.json` with the schema in FOUNDRY-V3-DESIGN.md §3.2. Include `user_intent_summary`, `packets[]` (with `consumes`, `produces`, `depends_on`, `terminal_slice`), `schema_version: "v3.0"`, `flow_graph_ref: "flow-graph.json"`, `generated_at`.
+10. **Emit `flow-delta.json`.** Use the `Write` tool to create `{survey_dir}/flow-delta.json` with the schema in FOUNDRY-V3-DESIGN.md §3.2. Include `user_intent_summary`, `packets[]` (with `consumes`, `produces`, `depends_on`, `terminal_slice`), `schema_version: "v3.0"`, `flow_graph_ref: "flow-graph.json"`, `generated_at`, and `entrypoint_node_id` (copied from `state.md` — this records the user-confirmed attachment point for downstream traceability).
 
 **CRITICAL: no subagent for R2.** If you catch yourself about to `Agent(subagent_type="forge:flow-interviewer", ...)` or similar, STOP. That is the failure mode we are specifically avoiding. Subagents have no `AskUserQuestion`. The `flow-interviewer.md` file is a methodology reference; you execute the methodology yourself.
 

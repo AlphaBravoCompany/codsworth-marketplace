@@ -1436,6 +1436,8 @@ iteration: 1
 max_iterations: $MAX_QUESTIONS
 started_at: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 spec_type: ""  # Set in R2 INTERVIEW: GREENFIELD, MIGRATION, BUG_FIX, REFACTOR
+entrypoint_node_id: ""  # Set in R2 INTERVIEW (brownfield only): flow-graph node ID where new work attaches, user-confirmed in plan.md §R2 step 3
+entrypoint_anchor: ""  # Set in R2 INTERVIEW (brownfield only): file:line of the confirmed entrypoint node's anchor
 feature_name: "$FEATURE_NAME"
 feature_slug: "$FEATURE_SLUG"
 output_dir: "$OUTPUT_DIR"

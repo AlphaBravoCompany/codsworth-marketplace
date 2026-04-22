@@ -10,8 +10,8 @@
     {
       "name": "forge",
       "source": "./plugins/forge",
-      "description": "Codebase-aware specification engine. V3 flow-reversal (v4.0.0) adds brownfield pipeline: flow-mapper produces a grounded flow graph of the existing system, R2 walks the user through node-by-node hop confirmation in the main thread, R3 emits a flow-delta instead of an end-state spec. Greenfield and cosmetic modes retain the V2 pipeline (spec-type detection, source-inventory enumeration, ecosystem domain scouting). Forge plans. Foundry builds.",
-      "version": "4.0.0",
+      "description": "Codebase-aware specification engine. V3 flow-reversal (v4.0.0) adds brownfield pipeline: flow-mapper produces a grounded flow graph of the existing system, R2 walks the user through node-by-node hop confirmation in the main thread, R3 emits a flow-delta instead of an end-state spec. v4.1.0: R2 adds explicit user-confirmed entrypoint — user picks where new work attaches from ranked flow-graph nodes before hop sketching, eliminating Claude's guessed-origin failure mode. Greenfield and cosmetic modes retain the V2 pipeline (spec-type detection, source-inventory enumeration, ecosystem domain scouting). Forge plans. Foundry builds.",
+      "version": "4.1.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
@@ -20,8 +20,8 @@
     {
       "name": "foundry",
       "source": "./plugins/foundry",
-      "description": "Autonomous build-verify-fix loop. V3 flow-reversal (v4.0.0): brownfield runs consume a flow-delta and dispatch packet-derived teammate prompts with upstream_anchor / prerequisite_hops / this_hop / downstream_contract / self_check blocks — no end-state description reaches teammates, eliminating endpoint-anchored plumbing hallucination. New flow-tracer INSPECT stream verifies forward-direction wiring (mirror of tracer's upstream check). Greenfield and cosmetic runs retain the V2 pipeline: pre-authored teammate prompts, router architecture, drift-prevention triad, 6-stream verification, defect grinding. Forge plans. Foundry builds.",
-      "version": "4.0.0",
+      "description": "Autonomous build-verify-fix loop. V3 flow-reversal (v4.0.0): brownfield runs consume a flow-delta and dispatch packet-derived teammate prompts with upstream_anchor / prerequisite_hops / this_hop / downstream_contract / self_check blocks — no end-state description reaches teammates, eliminating endpoint-anchored plumbing hallucination. v4.1.0 teammate upgrade: methodical deliberation procedures — read floor (depth before writing), approach deliberation (alternatives before committing), blast radius (consequences before editing), competing hypotheses (verification before fixing). Anti-depth guards retired; tuned for correctness over wall-clock speed. CAST and GRIND execution paths split so CAST deliberates while GRIND stays surgical. Greenfield and cosmetic runs retain the V2 pipeline: pre-authored teammate prompts, router architecture, drift-prevention triad, 6-stream verification, defect grinding. Forge plans. Foundry builds.",
+      "version": "4.1.0",
       "category": "development",
       "author": {
         "name": "AlphaBravo"
