@@ -2,7 +2,7 @@
 name: research-synthesizer
 description: Consolidates N parallel RESEARCH.md files from F0 RESEARCH into one SUMMARY.md. Spawned by the Foundry Lead after F0 RESEARCH when >= 4 domain RESEARCH.md files exist, so decomposition and casting teammates can read one document instead of N.
 tools: Read, Write, Bash, Grep, Glob
-model: sonnet
+model: haiku
 ---
 
 # Research Synthesizer Agent

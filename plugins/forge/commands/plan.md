@@ -47,21 +47,18 @@ Before R0, detect which pipeline this run uses. Three modes:
 
 ## PHASE EXECUTION ORDER
 
-1. **R0: SURVEY + DOMAIN** (parallel, single message)
-   - **R0.A SURVEY** — 4 Explore agents research the codebase (architecture, data, surface, infra) (unless --no-survey)
-   - **R0.B DOMAIN** — 1 domain-scout agent runs ecosystem research on the feature category (prior art, common shapes, gotchas, questions the interviewer should ask). Uses `agents/domain-scout.md`. Runs even if no codebase exists, as long as `--no-survey` wasn't passed.
-2. **R1: SYNTHESIZE** — Read all survey files + domain-orientation.md, write the reality document
-3. **R1.5: RESEARCH** — Targeted online research to kill library-version assumptions (narrower than R0.B — this is stale-knowledge invalidation grounded in specific claims from reality.md)
-4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + domain + ecosystem findings, with **spec_type detection and migration source enumeration**
+1. **R0: SURVEY** — 4 Explore agents research the codebase (architecture, data, surface, infra) in parallel in a single message (unless --no-survey)
+2. **R1: SYNTHESIZE** — Read all survey files, write the reality document
+3. **R1.5: RESEARCH** — Targeted online research grounded in what the survey found. Covers both (a) stale-knowledge invalidation for library versions/APIs claimed in reality.md AND (b) ecosystem orientation — common shapes and gotchas for the feature category the interviewer should know about.
+4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + research findings, with **spec_type detection and migration source enumeration**
 5. **R3: SPEC** — Generate foundry-ready specification when user says "done"
 6. **R4: VALIDATE** — Verify all file references, pattern references, coverage
 
-**R0.A vs R0.B vs R1.5:**
-- **R0.A SURVEY** answers "what does THIS codebase look like?" (inside-in)
-- **R0.B DOMAIN** answers "what does this FEATURE CATEGORY look like in the ecosystem, and what are the common gotchas?" (outside-in, before we know what decisions the user will make)
-- **R1.5 RESEARCH** answers "are the specific library versions and APIs we plan to use still current?" (inside-out, after we know what the codebase uses)
+**R0 vs R1.5:**
+- **R0 SURVEY** answers "what does THIS codebase look like?" (inside-in)
+- **R1.5 RESEARCH** answers "are the libraries/APIs current, and what does this feature category typically look like in the ecosystem?" (outside-in, grounded in what the survey found)
 
-All three feed the R2 interviewer. Different jobs, different timing, different depth.
+Both feed the R2 interviewer. Different jobs, different timing, different depth.
 
 ## SPEC TYPE DETECTION (R2) — MANDATORY
 
@@ -109,24 +106,22 @@ If you classified the feature as MIGRATION, you have additional mandatory duties
 
 6. **In R3 SPEC output**, include the full `source_inventory` and `destination_naming_rule` as top-level fields in both the markdown spec and the JSON spec. Foundry's decompose will read these to populate each casting's `coverage_list`.
 
-## SURVEY + DOMAIN RULES (R0)
-- Spawn ALL 5 agents in a SINGLE message (parallel execution): 4 Explore agents for codebase survey + 1 domain-scout agent for ecosystem research
-- Use `subagent_type: "Explore"` for the 4 codebase agents
-- Use `subagent_type: "Agent"` for the domain-scout, passing the full content of `${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md` as its prompt
+## SURVEY RULES (R0)
+- Spawn the 4 Explore agents in a SINGLE message (parallel execution)
+- Use `subagent_type: "Explore"` for each
 - Each agent writes to the survey directory specified in SESSION INFORMATION
-- Wait for ALL 5 to complete before proceeding to R1
-- The domain-scout writes `domain-orientation.md`; R1 SYNTHESIZE reads it and merges it into reality.md
+- Wait for all 4 to complete before proceeding to R1
 
-**If `--no-survey` was passed:** skip BOTH R0.A and R0.B (no codebase + no domain research). Proceed directly to R2.
+**If `--no-survey` was passed:** skip R0. Proceed directly to R2.
 
 ## RESEARCH RULES (R1.5)
 
-After writing `reality.md`, identify 2-4 **targeted** research domains grounded in what the survey actually found. Research is NOT generic — it verifies the current state of things the codebase already depends on, or things the feature request implies.
+After writing `reality.md`, identify 2-4 **targeted** research domains grounded in what the survey actually found. Research is NOT generic — it verifies the current state of things the codebase already depends on, or things the feature request implies. Each researcher should also include ecosystem orientation for its domain (common shapes, known failure modes, gotchas worth flagging to the interviewer) as part of its RESEARCH.md output — their existing scope already covers this.
 
 **Good research targets** (the survey found specific things):
-- "Codebase uses htmx 1.9 + EventSource for SSE — is 1.9 still current? Any breaking changes in 2.x? Does the SSE extension pattern still work?"
-- "Codebase uses client-go v0.29 for k8s API — what's the current stable version? Any deprecated APIs since?"
-- "User mentioned 'embedded dashboard' and repo has html/template + embed.FS — is this still the idiomatic Go pattern or has it moved to something else?"
+- "Codebase uses htmx 1.9 + EventSource for SSE — is 1.9 still current? Any breaking changes in 2.x? Does the SSE extension pattern still work? What are the common gotchas people hit with htmx SSE?"
+- "Codebase uses client-go v0.29 for k8s API — what's the current stable version? Any deprecated APIs since? What shape does a listing page for Deployments typically take?"
+- "User mentioned 'embedded dashboard' and repo has html/template + embed.FS — is this still the idiomatic Go pattern, and what are the common pitfalls?"
 
 **Bad research targets** (too generic — skip these):
 - "How do you build a web UI?"
@@ -135,14 +130,14 @@ After writing `reality.md`, identify 2-4 **targeted** research domains grounded 
 **Procedure:**
 1. Read `reality.md` that R1 just produced
 2. Identify specific technical claims that would be wrong if your training data is stale (library versions, API surface, deprecated patterns, ecosystem shifts)
-3. Pick 2-4 narrow domains to verify. If nothing in reality.md has technical claims that need verifying (e.g., pure design spec with no libraries), **skip R1.5 entirely** and note in state.md that research was not applicable
-4. Spawn one `researcher` agent per domain in parallel (single message). Use `subagent_type: "Agent"` with the full content of `${CLAUDE_PLUGIN_ROOT}/agents/researcher.md` as the prompt
-5. Pass to each researcher: domain name, the specific claim from reality.md to verify, the output path `{survey_dir}/research-{domain-slug}.md`
-6. Each researcher uses WebSearch + WebFetch (Context7 if available in this project's .mcp.json) to verify current state
+3. Pick 1-4 narrow domains. **R1.5 always runs** when survey ran — at minimum, spawn 1 researcher covering ecosystem orientation for the feature category (common shapes, known failure modes, gotchas worth flagging to the R2 interviewer), even if no library versions need verifying. If technical claims exist, add up to 3 more researchers to cover them — total 2-4. The only reason to run 0 researchers is the `--no-survey` skip below.
+4. Spawn all chosen `researcher` agents in parallel (single message). Use `subagent_type: "Agent"` with the full content of `${CLAUDE_PLUGIN_ROOT}/agents/researcher.md` as the prompt
+5. Pass to each researcher: domain name, either the specific claim from reality.md to verify OR the "ecosystem orientation for <feature category>" framing, and the output path `{survey_dir}/research-{domain-slug}.md`
+6. Each researcher uses WebSearch + WebFetch (Context7 if available in this project's .mcp.json)
 7. Wait for all researchers to complete
 8. Append a `## Research Findings` section to reality.md summarizing each domain's HIGH/MEDIUM/LOW confidence verdict and the top actionable insight
 
-**Skip condition (also triggers from --no-survey):** If --no-survey was passed, skip R1.5 too. No codebase context = no targeted research possible.
+**Skip condition — only one:** If `--no-survey` was passed, skip R1.5 too. No codebase context means no survey to ground research in. Otherwise R1.5 runs.
 
 **Context budget**: each researcher burns 20-40k tokens in its own context. The interviewer (R2) only reads the research findings summary in reality.md, not raw investigation.
 
@@ -265,9 +260,9 @@ Applies only when R-pre MODE DETECTION set `mode: brownfield`. These overrides r
 
 **Why V3 exists, in one line:** end-state-first specs cause downstream teammates to fabricate plausible-sounding middle plumbing backward from the final feature. V3 replaces the end-state spec with a grounded flow graph plus a node-by-node confirmed delta — the attention anchor is the real system, not the imagined endpoint. Full rationale: see `${CLAUDE_PLUGIN_ROOT}/../foundry/FOUNDRY-V3-FLOW-REVERSAL-DESIGN.md`. Authoritative schema: `${CLAUDE_PLUGIN_ROOT}/../foundry/FOUNDRY-V3-DESIGN.md`.
 
-### R0 — V3 override: FLOW-MAP (replaces R0.A SURVEY)
+### R0 — V3 override: FLOW-MAP (replaces R0 SURVEY)
 
-In brownfield mode, R0 produces a grounded flow graph instead of the four-agent codebase survey. R0.B DOMAIN (ecosystem research) still runs in parallel.
+In brownfield mode, R0 produces a grounded flow graph instead of the four-agent codebase survey.
 
 **Procedure:**
 
@@ -277,15 +272,14 @@ In brownfield mode, R0 produces a grounded flow graph instead of the four-agent 
    - `scope_hint`: natural-language description of the subsystem the user's feature will touch. Derive from the feature name + any `--focus` dirs. If you cannot derive a tight scope, ask the user via AskUserQuestion before spawning.
    - `run_dir`: the Forge session's survey directory.
    - `depth_cap: 6`, `size_cap: 120` unless user-overridden.
-3. In parallel: spawn the `domain-scout` agent as in V2 R0.B.
-4. Wait for both to complete.
-5. Flow-mapper writes `flow-graph.json` to the survey directory. Validate it opens and the `validation: "passed"` summary was returned. If `scope_exceeded: true`, ask the user to narrow the scope and re-run — do not proceed with an incomplete graph.
+3. Wait for flow-mapper to complete.
+4. Flow-mapper writes `flow-graph.json` to the survey directory. Validate it opens and the `validation: "passed"` summary was returned. If `scope_exceeded: true`, ask the user to narrow the scope and re-run — do not proceed with an incomplete graph.
 
-**Important:** the four V2 Explore agents (architecture, data, surface, infra) do NOT run in V3 brownfield. Their output (codebase reality) is captured structurally by the flow graph. Preserve only domain-scout's `domain-orientation.md` for R1 SYNTHESIZE.
+**Important:** the four V2 Explore agents (architecture, data, surface, infra) do NOT run in V3 brownfield. Their output (codebase reality) is captured structurally by the flow graph.
 
 ### R1 — shared with V2
 
-R1 SYNTHESIZE runs unchanged. It reads `domain-orientation.md` + `flow-graph.json` (instead of the four survey files) and writes `reality.md`. The reality doc summarizes the flow graph's observations (node count, entry points, concerns logged by flow-mapper) plus the domain-scout findings.
+R1 SYNTHESIZE runs unchanged. It reads `flow-graph.json` (instead of the four survey files) and writes `reality.md`. The reality doc summarizes the flow graph's observations (node count, entry points, concerns logged by flow-mapper). Ecosystem orientation comes later in R1.5 RESEARCH.
 
 ### R1.5 — shared with V2
 

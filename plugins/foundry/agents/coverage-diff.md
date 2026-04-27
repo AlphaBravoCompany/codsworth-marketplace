@@ -2,7 +2,7 @@
 name: coverage-diff
 description: F2 INSPECT stream for MIGRATION spec type. Runs a deterministic diff between each casting's coverage_list (source items to port) and the actual destination files, flagging missing destinations as COVERAGE_INCOMPLETE defects.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: haiku
 ---
 
 # Coverage Diff Agent

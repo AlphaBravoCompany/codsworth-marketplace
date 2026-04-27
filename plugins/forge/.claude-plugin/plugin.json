@@ -1,7 +1,7 @@
 {
   "name": "forge",
-  "description": "Codebase-aware specification engine. V3 flow-reversal mode (plugin v4.0.0): brownfield runs use flow-mapper + node-by-node flow-interviewer to produce grounded flow deltas instead of end-state specs. v4.1.0: R2 now asks the user to explicitly confirm the entrypoint (flow-graph node where new work attaches) before sketching hops — eliminating Claude's guessed-origin failure mode. Forge plans. Foundry builds.",
-  "version": "4.1.0",
+  "description": "Codebase-aware specification engine. V3 flow-reversal mode (plugin v4.0.0): brownfield runs use flow-mapper + node-by-node flow-interviewer to produce grounded flow deltas instead of end-state specs. v4.1.0: R2 now asks the user to explicitly confirm the entrypoint (flow-graph node where new work attaches) before sketching hops — eliminating Claude's guessed-origin failure mode. v4.2.0: opening-phase speed-up — domain-scout merged into the R1.5 researcher (R0 waits for 4 Explore agents instead of 5; ecosystem orientation moves to R1.5, which now always runs when survey ran). Forge plans. Foundry builds.",
+  "version": "4.2.0",
   "author": {
     "name": "AlphaBravo"
   }

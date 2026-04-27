@@ -2,7 +2,7 @@
 name: codebase-mapper
 description: Maps an existing codebase's stack, architecture, structure, conventions, integrations, and concerns before decomposition. Produces six structured files in foundry-archive/{run}/codebase/ consumed by F0.5 DECOMPOSE and casting teammates. Spawned by the Foundry Lead during F0 when the target codebase is unfamiliar or has strict patterns the build must honor.
 tools: Read, Grep, Glob, Bash, Write
-model: sonnet
+model: haiku
 ---
 
 # Codebase Mapper Agent

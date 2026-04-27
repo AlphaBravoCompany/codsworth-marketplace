@@ -47,7 +47,7 @@ DESCRIPTION:
 
   Phase R0:   SURVEY     - Parallel agents explore architecture, data, surface, infra
   Phase R1:   SYNTHESIZE  - Merge findings into codebase reality document
-  Phase R1.5: RESEARCH    - Targeted online research to verify stale assumptions
+  Phase R1.5: RESEARCH    - Targeted online research: stale-knowledge + ecosystem orientation
   Phase R2:   INTERVIEW   - Multi-round adaptive interview (grounded in R0/R1/R1.5)
   Phase R3:   SPEC        - Generate foundry-ready spec (US/FR/NFR/AC/OT IDs)
   Phase R4:   VALIDATE    - Self-check all file refs, patterns, coverage
@@ -200,19 +200,11 @@ cat > "$PROMPT_FILE" << SURVEY_PROMPT_EOF
 
 You are conducting a codebase-aware specification interview. Unlike a standard interview, you RESEARCH THE CODEBASE FIRST, then ask smart questions grounded in what you found.
 
-## PHASE R0: SURVEY + DOMAIN — Codebase Research + Ecosystem Orientation
+## PHASE R0: SURVEY — Codebase Research
 
-Before asking the user a single question, you must run TWO parallel research tracks: a codebase survey (4 agents) and an ecosystem domain scan (1 agent). **All 5 agents are spawned in a SINGLE message.** Wait for all 5 to complete before proceeding to R1.
+Before asking the user a single question, spawn 4 parallel Explore agents to survey the existing repo. **All 4 agents are spawned in a SINGLE message.** Use the Agent tool with \`subagent_type: "Explore"\` for each. Wait for all 4 to complete before proceeding to R1.
 
-**Track A — Codebase survey (4 Explore agents)** investigate the existing repo. Use the Agent tool with \`subagent_type: "Explore"\` for each.
-
-**Track B — Domain scout (1 Agent)** investigates the feature category in the wider ecosystem before we know what the user will decide. Use \`subagent_type: "Agent"\` and pass the full content of \`\${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md\` as its prompt. Include in the prompt:
-- **Feature name:** "$FEATURE_NAME"
-- **Initial user ask:** "$FEATURE_NAME" (and any --context file content)
-- **Survey directory:** $SURVEY_DIR
-- Output path: \`$SURVEY_DIR/domain-orientation.md\`
-
-The domain-scout uses WebSearch + WebFetch to find 3-5 prior-art examples of this feature category, identifies the common "shape" of the feature, surfaces 3-5 common gotchas, and proposes questions the interviewer should ask the user. Outside-in only — it does NOT grep the codebase (that's Track A's job).
+Ecosystem orientation (common shapes, gotchas for the feature category) happens later in R1.5 RESEARCH, grounded in what the survey actually found.
 $SCOPE_GUIDANCE
 
 ### Agent 1: ARCHITECT
@@ -302,7 +294,7 @@ Write your findings as structured markdown to: $SURVEY_DIR/infra.md
 Format: Use headers for each area. Include specific file paths and tool names.
 \`\`\`
 
-**After all 5 agents complete** (4 codebase + 1 domain-scout), read all survey files (architecture.md, data.md, surface.md, infra.md, domain-orientation.md) and proceed to PHASE R1.
+**After all 4 agents complete**, read all survey files (architecture.md, data.md, surface.md, infra.md) and proceed to PHASE R1.
 
 SURVEY_PROMPT_EOF
 
@@ -342,9 +334,9 @@ fi
 
 cat >> "$PROMPT_FILE" << SYNTH_PROMPT_EOF
 
-## PHASE R1: SYNTHESIZE — Build Codebase + Domain Reality Document
+## PHASE R1: SYNTHESIZE — Build Codebase Reality Document
 
-Read ALL 5 survey files (architecture.md, data.md, surface.md, infra.md, domain-orientation.md) and synthesize them into a single **reality document**. Write this to the reality path specified in SESSION INFORMATION below. The reality document now covers BOTH inside-in codebase knowledge AND outside-in domain orientation.
+Read ALL 4 survey files (architecture.md, data.md, surface.md, infra.md) and synthesize them into a single **reality document**. Write this to the reality path specified in SESSION INFORMATION below. The reality document captures inside-in codebase knowledge. Ecosystem orientation is added later in R1.5 RESEARCH.
 $SYNTH_CONTEXT
 **Key instruction:** Do NOT just concatenate the survey files. Synthesize them — cross-reference findings, resolve contradictions, and prioritize information relevant to the feature being built ("$FEATURE_NAME").
 
@@ -377,15 +369,6 @@ Structure the reality document as:
 - Where new feature code should live (specific packages/directories)
 - What existing code to extend vs. create new
 - Dependencies to be aware of
-
-## Domain Orientation
-- The "common shape" of this feature category in the ecosystem (from domain-orientation.md)
-- 3-5 prior-art examples with URLs (from domain-orientation.md)
-- Common gotchas the interviewer should surface during R2 (from domain-orientation.md)
-- Questions the user probably hasn't thought about (from domain-orientation.md)
-- Stale-assumption flags if any (from domain-orientation.md)
-
-This section is the OUTSIDE-IN counterpart to the codebase sections above. The interviewer uses it to ask domain-aware questions instead of treating every feature as novel.
 
 ## Foundation Health
 - Issues found by survey agents in their "Foundation Issues" sections
@@ -421,23 +404,29 @@ if [[ "$NO_SURVEY" != "true" ]]; then
 
 ## PHASE R1.5: RESEARCH — Targeted Online Research
 
-Before interviewing, verify your technical assumptions against the current ecosystem. Your training data is 6-18 months stale — library versions, API surfaces, and deprecated patterns may have shifted. Bad research targets (generic "how does X work") waste time. Good research targets verify specific claims in reality.md.
+Before interviewing, verify your technical assumptions against the current ecosystem AND gather ecosystem orientation for the feature category. Your training data is 6-18 months stale — library versions, API surfaces, and deprecated patterns may have shifted. Ecosystem orientation (common shapes, known failure modes, gotchas) helps the R2 interviewer ask domain-aware questions instead of treating every feature as novel.
 
 ### Purpose
 
-Read reality.md (the document R1 just wrote) and identify 2-4 narrow technical claims that would be **wrong if your training is stale**. Examples:
-- Reality.md says "codebase uses htmx 1.9" → research: is 1.9 still current? Any breaking changes in 2.x relevant to this feature?
-- Reality.md says "uses client-go v0.29 for Kubernetes API" → research: current stable version? Any deprecated APIs since 0.29?
-- Feature requires a library not yet in the codebase → research: what's the current recommended option?
+R1.5 covers two complementary jobs in one pass:
+- **(a) Stale-knowledge invalidation** — verify specific technical claims in reality.md (library versions, API surfaces, deprecated patterns).
+- **(b) Ecosystem orientation** — for the feature category, surface the common shape, 3-5 gotchas, and questions the user probably hasn't thought about.
 
-If reality.md has **no** verifiable technical claims (pure design spec, no libraries), **skip R1.5 entirely** and write a one-line note in state.md: "R1.5 skipped — no technical claims to verify."
+Examples:
+- Reality.md says "codebase uses htmx 1.9" → research: is 1.9 still current? Any breaking changes in 2.x relevant to this feature? What gotchas do people hit with htmx SSE?
+- Reality.md says "uses client-go v0.29 for Kubernetes API" → research: current stable version? Deprecated APIs since 0.29? What shape does a listing page for Deployments typically take?
+- Feature requires a library not yet in the codebase → research: what's the current recommended option, and what are the pitfalls?
+
+**R1.5 always runs** when survey ran (i.e., when --no-survey was NOT passed). Even if reality.md has no verifiable library claims, spawn at least 1 researcher covering ecosystem orientation for the feature category — the R2 interviewer needs outside-in context. The only skip path is the --no-survey branch below.
 
 ### Procedure
 
 1. Read reality.md in full
-2. Identify 2-4 specific claims to verify. Write them down as domain slugs (e.g., "htmx-2x-sse-extension", "client-go-deployments-v0-30")
+2. Identify 1-4 research domains:
+   - **At minimum**: 1 ecosystem-orientation domain for the feature category (e.g., "workloads-listing-page-patterns", "file-upload-ux-patterns")
+   - **If claims exist**: up to 3 additional stale-knowledge domains (library versions, API surfaces, deprecated patterns) — total capped at 4
 3. For each domain, spawn a \`researcher\` agent via the Agent tool. Use \`subagent_type: "Agent"\` and pass the full content of \`\${CLAUDE_PLUGIN_ROOT}/agents/researcher.md\` as the prompt. Include in the prompt:
-   - The specific claim from reality.md to verify
+   - The specific claim to verify OR the "ecosystem orientation for <feature category>" framing
    - The output path: \`$SURVEY_DIR/research-{domain-slug}.md\`
    - Any locked decisions from user context (if passed)
 4. Spawn ALL researchers in a SINGLE message for parallelism
@@ -457,9 +446,9 @@ If reality.md has **no** verifiable technical claims (pure design spec, no libra
 
 ### Rules
 
-- **Never** research generic topics ("what is htmx?"). Always verify a specific claim.
-- **Never** spawn more than 4 researchers per session. If there are more than 4 claims, pick the 4 highest-risk ones.
-- **Never** skip R1.5 unless there are no technical claims — stale library assumptions are the #1 source of bad specs.
+- **Never** research generic topics ("what is htmx?"). Always verify a specific claim OR orient against a specific feature category.
+- **Never** spawn more than 4 researchers per session. If there are more than 4 candidate domains, pick the highest-risk ones + keep the ecosystem-orientation slot.
+- **Never** skip R1.5 when survey ran. The minimum is 1 ecosystem-orientation researcher. Only --no-survey skips R1.5.
 - **Carry confidence forward.** If a researcher returns LOW confidence, the interviewer must ask the user to decide rather than assuming.
 - **Conflicts go to the user.** If research contradicts something the user said in the initial prompt, surface it in R2 INTERVIEW as an explicit question: "You mentioned X but research shows Y — which way?"
 
@@ -1404,19 +1393,15 @@ fi)
 ## BEGIN NOW
 
 $(if [[ "$NO_SURVEY" == "false" ]]; then
-  echo "Start by spawning the 5 R0 agents in parallel in a SINGLE message:"
-  echo "  - 4 Explore agents (Track A SURVEY: architecture, data, surface, infra)"
-  echo "  - 1 domain-scout Agent (Track B DOMAIN: ecosystem orientation)"
+  echo "Start by spawning the 4 R0 Explore agents in parallel in a SINGLE message (architecture, data, surface, infra)."
   echo ""
   echo "Replace {SURVEY_DIR} in the agent prompts with: $SURVEY_DIR"
-  echo ""
-  echo "For the domain-scout, pass the full content of \${CLAUDE_PLUGIN_ROOT}/agents/domain-scout.md as the prompt, plus the feature name and initial ask."
   if [[ -n "$FOCUS_DIRS" ]]; then
     echo ""
     echo "Focus codebase survey agents on these directories: $FOCUS_DIRS"
   fi
 else
-  echo "Survey is skipped (--no-survey passed — no codebase + no domain research). Begin the interview immediately by asking your first question about \"$FEATURE_NAME\" using AskUserQuestion."
+  echo "Survey is skipped (--no-survey passed). Begin the interview immediately by asking your first question about \"$FEATURE_NAME\" using AskUserQuestion."
 fi)
 
 SESSION_EOF
