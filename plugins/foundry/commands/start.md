@@ -54,17 +54,42 @@ Investigate HOW to build before decomposing. Spawn 2-4 researcher agents in para
 
 Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `codebase-mapper` agent. Agent writes seven files under `foundry-archive/{run}/codebase/`: STACK, ARCHITECTURE, STRUCTURE, CONVENTIONS, INTEGRATIONS, CONCERNS, MANDATORY_RULES. Returns `top_conventions` (3 rules) and `mandatory_rules` (full CLAUDE.md imperatives) — both get injected into every casting prompt at F0.5.
 
+### F0.6: PATTERN MAPPING
+
+After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and before F0.5 DECOMPOSE: spawn ONE `pattern-mapper` agent (`subagent_type: "general-purpose"` with prompt = full content of `${CLAUDE_PLUGIN_ROOT}/agents/pattern-mapper.md`, model: sonnet).
+
+**Why:** Casting prompts that reference an analog file:line + 20-30 line code excerpt produce sharper builds than prompts that say "follow conventions." Without a pattern map, every casting independently re-discovers (or fabricates) the same shape. With one, every casting gets a concrete excerpt to mirror.
+
+**Inputs to pass in the prompt:**
+- `run_dir`: `foundry-archive/{run_name}/`
+- `spec_path`: the spec.md path (from `Foundry-Init` output)
+- `flow_delta_path`: the flow-delta.json path if V3 mode (else omit)
+- `codebase_dir`: `foundry-archive/{run_name}/codebase/` if codebase-mapper ran (else omit)
+- `project_root`: absolute path to the codebase being built
+
+**Output:** `foundry-archive/{run_name}/patterns/PATTERNS.md` — a single file with `## File Classification` table, per-file `## Pattern Assignments` blocks, `## Shared Patterns` cross-cutting excerpts, and `## No Analog Found` fallback list.
+
+**Skip conditions** (any one):
+- Spec has no files-to-be-created (extraction yields empty list — pure-config or pure-docs spec).
+- Codebase has fewer than 5 source files (greenfield with nothing to mirror — the spec/research carry the full pattern burden).
+- User passed `--no-pattern-map` flag.
+
+**If skipped, write a sentinel file** `foundry-archive/{run_name}/patterns/PATTERNS.md` containing only `# Pattern Map\n\n## Status: SKIPPED — {reason}\n` so decompose can detect the absence cleanly.
+
+**Wait for completion before F0.5.** Decompose requires PATTERNS.md (or the SKIPPED sentinel) to populate every casting's `<analog_pattern>` block.
+
 ### F0.5: DECOMPOSE
 
 **Plans are prompts.** Decompose authors both the casting manifest AND the complete teammate prompt file for each casting, from the spec as source of truth. The lead at F1/F3 is a router, not an interpreter.
 
 **V3 MODE DETECTION:** before decomposing, check whether `spec.md` references a flow delta (look for `## Flow Delta Reference` heading or a `flow_delta_path` field in the JSON spec). If yes → V3 mode: use the V3 packet-derived decomposition procedure below (§F0.5 V3). If no → V2 mode: use the standard procedure immediately below.
 
-**Procedure (V2 mode, unchanged):**
+**Procedure (V2 mode):**
 
-1. Read the spec in full. Read research findings (`research/SUMMARY.md` or `research/*.md`).
+1. Read the spec in full. Read research findings (`research/SUMMARY.md` or `research/*.md`). Read `patterns/PATTERNS.md` from F0.6 — every per-file analog excerpt and every shared-patterns block goes into a casting prompt below.
 2. **Extract global invariants.** If `spec.md` has a `## Global Invariants` section (or `<global_invariants>` block), copy it verbatim to `manifest.global_invariants` — INCLUDING any `### Architectural Placement` / `### Cross-Cutting Technical Rules` subsections, GI-NNN entries with `[from A-NNN]` citations, and the literal "None — the user gave no explicit placement constraints." sentinel if the forge spec wrote that. Otherwise empty string. **Never paraphrase, never filter, never omit subsections.** Forge specs always have this section; if it's missing, the spec was either hand-written or forge failed validation. For forge-generated specs that contain the sentinel, propagate the sentinel verbatim — downstream PROVE/TRACE read it as "no placement rules to enforce for this run." The `<global_invariants>` block in every casting prompt is the only channel through which architectural-placement constraints reach CAST teammates; an empty block when the spec had real constraints means every casting will be built in a constraint-free context and will likely place code in the wrong architectural layer.
 3. **Extract mandatory rules.** If `codebase/MANDATORY_RULES.md` exists from F0 mapping, copy its body verbatim to `manifest.mandatory_rules`. Otherwise empty string. Never filter.
+3a. **Index PATTERNS.md by file.** If `patterns/PATTERNS.md` is not the SKIPPED sentinel: parse `## File Classification` into a lookup `{file_path → analog, match_quality}`. Parse `## Pattern Assignments` into per-file blocks `{file_path → full block (Imports + Setup + Core + Error)}`. Parse `## Shared Patterns` into `{role → list of excerpts with "Apply to:" lines}`. If PATTERNS.md is SKIPPED, every casting's `<analog_pattern>` block is the sentinel `Pattern map skipped — {reason}. Use research and codebase conventions instead.` and every `<shared_patterns>` block is empty.
 4. Identify 2-5 domains. Spawn parallel **background** Agents (1 per domain, max 5; `subagent_type='general-purpose'`, `run_in_background=true`, `mode='bypassPermissions'`). No team needed — these are short-lived file writers and don't need `TeamCreate`/shutdown coordination. Each agent writes:
    - An entry in `castings/manifest.json`
    - A complete prompt file at `castings/casting-{id}-prompt.md`
@@ -86,6 +111,23 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
    {Verbatim spec text for this casting's ACs — char-for-char from spec.md}
    </spec_requirements>
 
+   <analog_pattern>
+   {For each file in this casting's key_files that has an analog in PATTERNS.md:
+     paste the file's FULL pattern block verbatim — Imports excerpt + Setup excerpt +
+     Core behavior excerpt + Error handling excerpt, each with file:line citation.
+    For files with no analog: paste the row from PATTERNS.md ## No Analog Found
+     including the Fallback reference.
+    If PATTERNS.md is SKIPPED: paste the sentinel "Pattern map skipped — {reason}.
+     Use research and codebase conventions instead."}
+   </analog_pattern>
+
+   <shared_patterns>
+   {For each shared pattern in PATTERNS.md ## Shared Patterns whose "Apply to:" line
+    matches any role this casting is implementing: paste the full excerpt verbatim
+    with file:line citation. Group by pattern category (Auth, Error, Logging, etc.).
+    Empty block is fine — only populate when shared patterns genuinely apply.}
+   </shared_patterns>
+
    ---
 
    ## Casting Metadata
@@ -94,6 +136,7 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
    **key_files:** {non-overlapping file boundary}
    **research_context:** {verbatim research summary or RESEARCH.md path}
    **top_conventions:** {3 rules from codebase-mapper}
+   **pattern_refs:** {file_path → analog_path mapping for this casting's key_files, copied from PATTERNS.md ## File Classification}
 
    ---
 
@@ -103,6 +146,11 @@ Before F0.5, if the codebase is unfamiliar or has strict patterns: spawn one `co
    **Flexible:** {discretion on approach}
    **Informational:** {context, not requirements}
    ```
+
+   **Why these blocks matter:**
+   - `<analog_pattern>` tells the teammate "the existing file at file:line is your template — read it, mirror its shape." Without this, the teammate fabricates a plausible-but-novel shape that diverges from the rest of the codebase.
+   - `<shared_patterns>` tells the teammate "every handler in this codebase wraps with auth.Required — yours must too." Cross-cutting concerns are the most-forgotten kind of detail; the block makes them unforgettable.
+   - `pattern_refs` in metadata gives the F0.9 validate step a deterministic check: every `key_files` entry that appears in PATTERNS.md ## File Classification must have a non-empty `<analog_pattern>` block.
 
 7. **Forbidden phrases** (F0.9 VALIDATE rejects them — see `references/lead-discipline.md` for the full list): "pick the core", "follow-up PR", "user will validate manually", "reduced scope", "target line count", "sufficient coverage", etc.
 8. **Sizing limits:** single casting ≤ 800 LOC of source material to read, ≤ 1500 LOC of new code. Bigger = more castings, never tighter prompts.
@@ -117,11 +165,12 @@ When the spec references a flow delta, decomposition becomes **deterministic** �
 - `flow-graph.json` — grounded graph from Forge V3 R0 (companion to the delta).
 - `spec.md` — compatibility spec for invariants and appendix.
 - `manifest.mandatory_rules`, `manifest.global_invariants` — extracted as in V2.
+- `patterns/PATTERNS.md` from F0.6 — even in V3, this provides cross-cutting `## Shared Patterns` (auth wrapping, error envelope, logger threading) that the flow graph does not anchor. The per-packet sibling in `<upstream_anchor>` covers role-shape; `<shared_patterns>` covers convention-shape.
 
 **Procedure:**
 
-1. Read `flow-delta.json` and `flow-graph.json`.
-2. Extract `mandatory_rules` and `global_invariants` exactly as in V2 steps 2–3 (verbatim, never paraphrase).
+1. Read `flow-delta.json`, `flow-graph.json`, AND `patterns/PATTERNS.md`.
+2. Extract `mandatory_rules` and `global_invariants` exactly as in V2 steps 2–3 (verbatim, never paraphrase). Index PATTERNS.md `## Shared Patterns` by role for the V3 prompt template's `<shared_patterns>` block (same indexing as V2 step 3a).
 3. **One packet = one casting.** Do NOT identify domains; the delta already did. Spawn one background Agent per packet to write the casting prompt. Max 5 in parallel, same cadence as V2.
 4. **Each casting manifest entry:**
    - `id`: the packet ID (`P1`, `P2`, ...).
@@ -196,6 +245,16 @@ When the spec references a flow delta, decomposition becomes **deterministic** �
    Your produced symbol must NOT yet be called from anywhere the downstream packet will add the call — that is its job, not yours.
    </self_check>
 
+   <shared_patterns>
+   {For each shared pattern in PATTERNS.md ## Shared Patterns whose "Apply to:"
+    line matches this packet's role (handler, service, middleware, etc.): paste the
+    full excerpt verbatim with file:line citation. Group by category (Auth, Error,
+    Logging). Empty block is fine — only populate when shared patterns genuinely
+    apply. Note: V3's <upstream_anchor> already carries the per-packet sibling from
+    the flow graph; <shared_patterns> covers the cross-cutting patterns that the
+    flow graph does not anchor (auth wrapping, error envelope, logger threading).}
+   </shared_patterns>
+
    ---
 
    ## Casting Metadata (V3 packet mode)
@@ -204,6 +263,7 @@ When the spec references a flow delta, decomposition becomes **deterministic** �
    **flow_graph_refs:** {anchors of existing nodes this packet consumes}
    **sibling_pattern:** {which graph node was chosen as the pattern}
    **top_conventions:** {3 rules from codebase-mapper if present}
+   **pattern_refs:** {if PATTERNS.md is not SKIPPED, the analog mapping for this packet's file from PATTERNS.md ## File Classification — `null` when packet's file has no analog row}
    ```
 
 6. **Byte-identical `<mandatory_rules>` and `<global_invariants>`** across every V3 casting, same as V2.
@@ -227,6 +287,26 @@ Call `Foundry-Validate-Castings` — runs 10 dimensions:
 8. **Migration Coverage** — MIGRATION specs only; 1:1 coverage_list
 9. **Spec Structure** — spec has tagged req IDs (error); spec has `## Global Invariants` section (warning)
 10. **File Change Map ↔ key_files cross-check** — every file in spec's `## File Change Map` must appear in exactly one casting's key_files (error if orphaned — the change is unimplementable). Files in key_files but not in the map are flagged as scope creep (warning). Skipped if the spec has no File Change Map section.
+
+**Dimension 11 — Pattern Compliance (lead-side manual check, runs after `Foundry-Validate-Castings`):**
+
+For each casting, read its prompt file and verify:
+
+a. **`<analog_pattern>` block exists and is non-empty** — every casting prompt must contain this block. An empty block means decompose failed to inject. Error if missing entirely; error if empty when PATTERNS.md has analog assignments for any of the casting's `key_files`; PASS with warning if PATTERNS.md is SKIPPED and the block contains the SKIPPED sentinel.
+
+b. **Every `key_files` entry that appears in PATTERNS.md `## File Classification` has its full pattern block injected.** Cross-check by grepping the casting prompt for the analog file's name. If `key_files` includes `internal/handlers/auth.go` and PATTERNS.md says its analog is `internal/handlers/users.go`, the casting prompt must contain `internal/handlers/users.go` somewhere inside `<analog_pattern>`. Error if a mapped analog is missing.
+
+c. **`<shared_patterns>` block matches PATTERNS.md `## Shared Patterns` for this casting's role(s).** If PATTERNS.md says "Apply to: every handler" and this casting builds a handler, that shared pattern's excerpt must appear inside `<shared_patterns>`. Warning (not error) if a shared pattern is missing — teammates can sometimes derive cross-cutting patterns from research, but the build is sharper when the excerpt is present.
+
+d. **No paraphrased excerpts.** `<analog_pattern>` and `<shared_patterns>` excerpts must be byte-for-byte from PATTERNS.md (which itself is byte-for-byte from the analog file). Spot-check by reading 1-2 random excerpts from a casting prompt and grepping the cited file:line in the actual codebase. Mismatch = error.
+
+**Severity rules for Dimension 11:**
+- 11a missing block: error (re-run decompose for that casting).
+- 11b mapped analog missing from prompt: error.
+- 11c shared pattern missing: warning.
+- 11d paraphrased excerpt: error (decompose violated verbatim rule — re-run).
+
+Skip Dimension 11 entirely if `patterns/PATTERNS.md` does not exist (F0.6 was not run — pre-pattern-mapper run, or pattern-mapper crashed). In that case, log a single warning "Dimension 11 skipped — no PATTERNS.md" and proceed.
 
 **Revision loop:** auto-revise on failures (max 3 iterations), then proceed with warnings.
 
