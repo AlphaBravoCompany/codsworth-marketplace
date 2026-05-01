@@ -84,6 +84,36 @@ CITATION_RE = re.compile(
 ANSWER_REF_RE = re.compile(r"\bA-\d+\b")
 QUESTION_CITE_RE = re.compile(r"\[\s*from\s+(Q-\d+)\s*\]", re.IGNORECASE)
 
+# IMPLICIT_FACT tag validation (Phase 1 / INTV-01).
+# These constants support the check_implicit_facts() validator and the
+# A-AUTO-NNN parsing extension below. Closed vocabulary mirrors the
+# user's locked decision in 01-CONTEXT.md (DEPLOYMENT, SCALE, RUNTIME,
+# FRAMEWORK_VERSION, SECURITY, NETWORK, OTHER).
+IMPLICIT_FACT_TAG_RE = re.compile(r"\[IMPLICIT_FACT:([A-Z_]+)\]")
+VALID_IMPLICIT_FACT_CATEGORIES = frozenset({
+    "DEPLOYMENT",
+    "SCALE",
+    "RUNTIME",
+    "FRAMEWORK_VERSION",
+    "SECURITY",
+    "NETWORK",
+    "OTHER",
+})
+A_AUTO_ID_RE = re.compile(r"^A-AUTO-\d+$")
+# Parallel regex to ANSWER_BLOCK_RE for A-AUTO-NNN entries (auto-discovered
+# implicit facts). The lookahead terminates on Q-NNN, A-NNN, A-AUTO-NNN,
+# or any other top-level capitalized heading. ANSWER_BLOCK_RE intentionally
+# does NOT match A-AUTO-NNN (its first group is A-\d+ only); this pattern
+# fills that gap.
+A_AUTO_BLOCK_RE = re.compile(
+    r"^##\s+(A-AUTO-\d+)"
+    r"(?:\s*\[([^\]]*)\])?"
+    r"(?:\s*\(([^)]*)\))?"
+    r"\s*\n(.*?)"
+    r"(?=^##\s+[AQ]-\d+|^##\s+A-AUTO-\d+|^##\s+[A-Z]|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
 QUOTED_STRING_RE = re.compile(r'"([^"\n]{3,})"')
 
 LOCKED_ITEM_ID_RE = re.compile(
@@ -211,6 +241,22 @@ def parse_transcript(text: str) -> dict[str, Answer]:
         tags = [t.strip() for t in tag_blob.split(",") if t.strip()]
         answers[aid] = Answer(
             id=aid,
+            body=body,
+            tags=tags,
+            label=label,
+            normalized_body=normalize_for_compare(body),
+        )
+    # A-AUTO-NNN entries (auto-discovered implicit facts) — Phase 1 / INTV-01.
+    # Stored alongside A-NNN entries so check_implicit_facts can validate
+    # well-formedness; check_coverage exempts them from UNCITED_ANSWERS.
+    for match in A_AUTO_BLOCK_RE.finditer(text):
+        auto_id = match.group(1)
+        tag_blob = match.group(2) or ""
+        label = (match.group(3) or "").strip()
+        body = match.group(4).strip()
+        tags = [t.strip() for t in tag_blob.split(",") if t.strip()]
+        answers[auto_id] = Answer(
+            id=auto_id,
             body=body,
             tags=tags,
             label=label,
