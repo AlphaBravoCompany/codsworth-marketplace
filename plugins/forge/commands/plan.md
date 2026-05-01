@@ -50,15 +50,17 @@ Before R0, detect which pipeline this run uses. Three modes:
 1. **R0: SURVEY** — 4 Explore agents research the codebase (architecture, data, surface, infra) in parallel in a single message (unless --no-survey)
 2. **R1: SYNTHESIZE** — Read all survey files, write the reality document
 3. **R1.5: RESEARCH** — Targeted online research grounded in what the survey found. Covers both (a) stale-knowledge invalidation for library versions/APIs claimed in reality.md AND (b) ecosystem orientation — common shapes and gotchas for the feature category the interviewer should know about.
-4. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + research findings, with **spec_type detection and migration source enumeration**
-5. **R3: SPEC** — Generate foundry-ready specification when user says "done"
-6. **R4: VALIDATE** — Verify all file references, pattern references, coverage
+4. **R1.75: IMPLICIT-FACT EXTRACTION** — Walk the closed vocabulary (DEPLOYMENT, SCALE, RUNTIME, FRAMEWORK_VERSION, SECURITY, NETWORK, OTHER) and emit a gap-list. Auto-discover environmental facts from reality.md as `## A-AUTO-NNN [IMPLICIT_FACT:CATEGORY]` entries with `[from <source>]` citations; ask the user only the gaps via AskUserQuestion. Under `--no-survey`, ask the full closed vocabulary as a single batched AskUserQuestion at the start of R2. Every implicit fact lands in transcript.md before R2 free-form opens, so downstream Foundry agents (especially INTENT-01 in Phase 8) have citation anchors for constraints the user assumed but never explicitly stated.
+5. **R2: INTERVIEW** — Multi-round adaptive interview grounded in codebase + research findings, with **spec_type detection and migration source enumeration**. R2 rule #10 requires that any environmental fact volunteered during free-form is also tagged `[IMPLICIT_FACT:CATEGORY]` in the transcript heading immediately after AskUserQuestion returns.
+6. **R3: SPEC** — Generate foundry-ready specification when user says "done"
+7. **R4: VALIDATE** — Verify all file references, pattern references, coverage. validate-spec.py enforces the IMPLICIT_FACT contract: closed vocabulary, A-AUTO-NNN well-formedness ([IMPLICIT_FACT:CATEGORY] tag + [from <source>] citation required), and IMPLICIT_FACT_SKIPPED (warning in Phase 1, will become a hard failure in Phase 3 / TYPE-02 when `spec_format_version >= v2.1`).
 
-**R0 vs R1.5:**
+**R0 vs R1.5 vs R1.75:**
 - **R0 SURVEY** answers "what does THIS codebase look like?" (inside-in)
 - **R1.5 RESEARCH** answers "are the libraries/APIs current, and what does this feature category typically look like in the ecosystem?" (outside-in, grounded in what the survey found)
+- **R1.75 IMPLICIT-FACT EXTRACTION** answers "what environmental constraints (deployment, scale, runtime, framework version, security regime, network model) is the user assuming but never stating?" (gap-list scout-then-ask, mirroring GSD's `/gsd:discuss-phase` Step 4 + Step 7 pattern)
 
-Both feed the R2 interviewer. Different jobs, different timing, different depth.
+All three feed the R2 interviewer. Different jobs, different timing, different depth. R0 is structural (codebase shape), R1.5 is ecosystem (library/feature-category currency), R1.75 is environmental (the deployment/scale/security/runtime context the user takes for granted).
 
 ## SPEC TYPE DETECTION (R2) — MANDATORY
 
