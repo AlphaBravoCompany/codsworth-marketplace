@@ -1,0 +1,8 @@
+{
+  "name": "forge",
+  "description": "Codebase-aware specification engine for Claude Code. Runs parallel codebase research, then a grounded interview, then writes a foundry-ready spec with classified, citation-backed requirements. Detects brownfield, greenfield, and cosmetic modes; brownfield runs produce a flow delta against the existing system. Forge plans. Foundry builds.",
+  "version": "4.2.0",
+  "author": {
+    "name": "AlphaBravo"
+  }
+}

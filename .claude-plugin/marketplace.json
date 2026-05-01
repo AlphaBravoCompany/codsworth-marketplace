@@ -1,0 +1,30 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "codsworth",
+  "description": "Plugin marketplace for Codsworth — the spec engine and the build engine for Claude Code.",
+  "owner": {
+    "name": "AlphaBravo"
+  },
+  "plugins": [
+    {
+      "name": "forge",
+      "source": "./plugins/forge",
+      "description": "Codebase-aware specification engine. Runs a grounded interview against your repo and writes a foundry-ready spec — locked, classified, and verifiable. Brownfield runs produce a flow delta against the existing system; greenfield runs produce an end-state spec; cosmetic runs skip flow mapping. Forge plans. Foundry builds.",
+      "version": "4.2.0",
+      "category": "development",
+      "author": {
+        "name": "AlphaBravo"
+      }
+    },
+    {
+      "name": "foundry",
+      "source": "./plugins/foundry",
+      "description": "Autonomous build-verify-fix loop. Decomposes a spec into castings, dispatches teammate prompts verbatim, runs parallel verification streams (TRACE, FLOW_TRACE, PROVE, RESEARCH_AUDIT, COVERAGE_DIFF, SIGHT, TEST), grinds defects to zero, then assays the result with fresh-eyes verification. Forge plans. Foundry builds.",
+      "version": "4.2.0",
+      "category": "development",
+      "author": {
+        "name": "AlphaBravo"
+      }
+    }
+  ]
+}
