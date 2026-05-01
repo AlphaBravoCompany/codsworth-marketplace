@@ -108,10 +108,17 @@ def run_validator_subprocess() -> Callable[..., subprocess.CompletedProcess]:
 def run_setup_forge(tmp_path: Path) -> Callable[..., SetupForgeResult]:
     """Invoke setup-forge.sh via subprocess and capture the assembled prompt.
 
-    setup-forge.sh writes the assembled R0-R4 prompt to a mktemp file, prints
-    the path on the last line of stdout, and exits. The prompt is the
-    interactive instruction set the model would consume — for smoke testing,
-    we read that file directly.
+    setup-forge.sh assembles the R0-R4 prompt in a mktemp PROMPT_FILE, then
+    reads it into ``$INTERVIEW_PROMPT`` and ``rm``s the temp file before
+    ``echo "$INTERVIEW_PROMPT"`` dumps the entire prompt content to stdout
+    (see setup-forge.sh:1505-1509,1705). There is no persistent prompt-file
+    path on stdout — the prompt content IS the stdout.
+
+    For smoke testing we mirror that reality: write stdout to a per-test
+    sentinel file under ``tmp_path`` and expose it as ``prompt_path``.
+    Callers asserting ``result.prompt_path is not None`` confirm the script
+    ran to completion; callers asserting on ``result.prompt_text`` get the
+    full assembled prompt the LLM would consume.
 
     Usage:
         result = run_setup_forge("test-feature", "--no-survey")
@@ -133,24 +140,18 @@ def run_setup_forge(tmp_path: Path) -> Callable[..., SetupForgeResult]:
             cwd=str(tmp_path),
         )
 
-        # setup-forge.sh prints the PROMPT_FILE path on its final stdout line.
-        # We extract it by scanning stdout lines in reverse for an existing
-        # file path. If we can't find one, prompt_text is "" (callers should
-        # check process.returncode).
+        # setup-forge.sh dumps the assembled prompt content directly on stdout
+        # via `echo "$INTERVIEW_PROMPT"` at the end. Persist it to a sentinel
+        # file inside tmp_path so prompt_path is non-None on success and
+        # prompt_text is readable for assertions. On non-zero exit, leave
+        # prompt_path None (callers should check process.returncode first).
         prompt_path: Path | None = None
         prompt_text = ""
-        for line in reversed(proc.stdout.splitlines()):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            candidate = Path(stripped)
-            if candidate.is_file():
-                prompt_path = candidate
-                try:
-                    prompt_text = candidate.read_text()
-                except OSError:
-                    prompt_text = ""
-                break
+        if proc.returncode == 0 and proc.stdout:
+            sentinel = tmp_path / "captured-prompt.txt"
+            sentinel.write_text(proc.stdout)
+            prompt_path = sentinel
+            prompt_text = proc.stdout
 
         return SetupForgeResult(
             process=proc,

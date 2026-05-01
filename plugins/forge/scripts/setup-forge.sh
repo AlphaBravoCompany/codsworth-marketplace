@@ -466,6 +466,102 @@ RESEARCH_SKIP_EOF
 fi
 
 # =========================================================================
+# PHASE R1.75: IMPLICIT-FACT EXTRACTION — gap-list scout-then-ask
+# =========================================================================
+
+if [[ "$NO_SURVEY" == "false" ]]; then
+  cat >> "$PROMPT_FILE" << 'IMPLICIT_FACT_PROMPT_EOF'
+
+## PHASE R1.75: IMPLICIT-FACT EXTRACTION — Scout-then-Ask Gap-List
+
+After R1.5 RESEARCH appends `## Research Findings` to reality.md, walk the
+closed vocabulary and emit a gap-list BEFORE opening R2 free-form interview.
+
+### Closed Vocabulary
+
+Six core categories + OTHER escape hatch:
+  - DEPLOYMENT — deployment target (AWS/GCP/Azure/on-prem/k8s/serverless/edge)
+  - SCALE — request rate, data size, user count, throughput
+  - RUNTIME — language + version (Go 1.21, Node 20, Python 3.12)
+  - FRAMEWORK_VERSION — major dependency versions (htmx 1.9, client-go 0.29)
+  - SECURITY — compliance regime (SOC2, HIPAA, public/internal/regulated)
+  - NETWORK — connectivity model (online, offline-first, air-gapped, multi-region)
+  - OTHER — escape hatch; name actual category in entry body
+
+### Procedure (scout-then-ask, mirroring GSD discuss-phase)
+
+1. Read reality.md in full (architecture, data, surface, infra summaries +
+   research findings).
+2. For each of the six categories, scan reality.md and survey/*.md for
+   keywords/findings that determine the value:
+   - DEPLOYMENT: docker-compose.yml, k8s manifests, terraform/, .github/workflows
+   - SCALE: any explicit perf metric, RPS reference, table-size mention
+   - RUNTIME: go.mod / package.json / pyproject.toml version
+   - FRAMEWORK_VERSION: research findings naming specific library versions
+   - SECURITY: auth middleware, encryption setup, compliance docs
+   - NETWORK: CDN refs, edge deployment, offline-storage patterns
+3. For each AUTO-DISCOVERED category, emit a synthetic transcript entry:
+   ```
+   ## A-AUTO-NNN [IMPLICIT_FACT:CATEGORY] (auto-discovered short label)
+   <verbatim or near-verbatim restatement> [from <source-file>]
+   ```
+4. For each GAP (category not auto-discoverable), formulate a domain-specific,
+   code-context-annotated AskUserQuestion. Phrasing rules:
+   - Cite the specific file/finding that prompted the question
+   - Closed-form options where possible (don't ask "describe X" — ask
+     "we see X in <file> — confirm or upgrade?")
+   - Spec-domain-rephrased ("for adding a workloads page, ask about k8s
+     API version specifically, not generic 'deployment target'")
+5. Ask the gap-fill questions via AskUserQuestion, ONE per gap, sequentially.
+   Append each Q+A verbatim to transcript.md immediately, tagging the A-NNN
+   with the relevant [IMPLICIT_FACT:CATEGORY].
+6. If user answers "none/N-A/declines", STILL append a tagged A-NNN with
+   body "User declined to specify [IMPLICIT_FACT:CATEGORY]" — explicit
+   declines are load-bearing for INTENT-01.
+
+### Validator Contract
+
+`validate-spec.py` enforces at SPEC FORGED:
+  - Every [IMPLICIT_FACT:X] uses a known category
+  - Every A-AUTO-NNN entry has a tag AND a [from <source>] citation
+  - Transcript with any A-NNN must contain ≥1 IMPLICIT_FACT-tagged entry
+    (auto-discovered or user-answered) — otherwise R1.75 didn't run
+
+After emitting auto-facts and asking gap-fills, proceed to PHASE R2 INTERVIEW.
+
+IMPLICIT_FACT_PROMPT_EOF
+
+else
+  cat >> "$PROMPT_FILE" << 'IMPLICIT_FACT_NOSURVEY_PROMPT_EOF'
+
+## PHASE R1.75: IMPLICIT-FACT EXTRACTION — Full Closed-Vocab Batch (--no-survey fallback)
+
+R0/R1/R1.5 were skipped (--no-survey), so there is no reality.md to scout.
+Without a codebase reality doc, every closed-vocabulary category is a gap —
+the gap-list IS the full closed vocabulary. Ask the full closed vocabulary
+as one batched AskUserQuestion at the start of R2.
+
+### Procedure
+
+1. Compose a single AskUserQuestion with six sub-questions (one per category):
+   DEPLOYMENT, SCALE, RUNTIME, FRAMEWORK_VERSION, SECURITY, NETWORK.
+2. Phrase each as a brief plain-language prompt. The user can answer "skip"
+   or "N-A" for any.
+3. After the user responds, append SIX A-NNN entries to transcript.md, each
+   tagged with the relevant [IMPLICIT_FACT:CATEGORY]. Bodies are the user's
+   verbatim answer (or "User declined to specify [IMPLICIT_FACT:CATEGORY]"
+   for skipped categories).
+4. Then proceed to PHASE R2 INTERVIEW with normal free-form questions.
+
+### Validator Contract (same as scout-then-ask path)
+
+Same enforcement — at least one [IMPLICIT_FACT:CATEGORY] tag must appear in
+the transcript before SPEC FORGED.
+
+IMPLICIT_FACT_NOSURVEY_PROMPT_EOF
+fi
+
+# =========================================================================
 # PHASE R2: INTERVIEW — Codebase-grounded adaptive interview
 # =========================================================================
 
