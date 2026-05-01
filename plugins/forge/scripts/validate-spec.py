@@ -89,7 +89,16 @@ QUESTION_CITE_RE = re.compile(r"\[\s*from\s+(Q-\d+)\s*\]", re.IGNORECASE)
 # A-AUTO-NNN parsing extension below. Closed vocabulary mirrors the
 # user's locked decision in 01-CONTEXT.md (DEPLOYMENT, SCALE, RUNTIME,
 # FRAMEWORK_VERSION, SECURITY, NETWORK, OTHER).
+#
+# Two regex variants:
+#   IMPLICIT_FACT_TAG_RE         — matches the bracketed form '[IMPLICIT_FACT:X]'
+#                                  in raw transcript text (closed-vocab scan).
+#   IMPLICIT_FACT_TAG_INNER_RE   — matches the un-bracketed form 'IMPLICIT_FACT:X'
+#                                  inside tag-list strings after parse_transcript
+#                                  has stripped the surrounding brackets and
+#                                  comma-split the tag list (validate-spec.py:211).
 IMPLICIT_FACT_TAG_RE = re.compile(r"\[IMPLICIT_FACT:([A-Z_]+)\]")
+IMPLICIT_FACT_TAG_INNER_RE = re.compile(r"^IMPLICIT_FACT:([A-Z_]+)$")
 VALID_IMPLICIT_FACT_CATEGORIES = frozenset({
     "DEPLOYMENT",
     "SCALE",
@@ -388,9 +397,15 @@ def check_structure(
         return
 
     # Count A-NNN blocks inside the appendix (not body) and compare to
-    # transcript.md. If the appendix is truncated, fail.
+    # transcript.md. If the appendix is truncated, fail. A-AUTO-NNN entries
+    # (Phase 1 / INTV-01) are counted via the parallel A_AUTO_BLOCK_RE — they
+    # live in transcript_answers alongside A-NNN, so the appendix must
+    # contain them too.
     appendix_answer_ids = set(
         m.group(1) for m in ANSWER_BLOCK_RE.finditer(appendix)
+    )
+    appendix_answer_ids.update(
+        m.group(1) for m in A_AUTO_BLOCK_RE.finditer(appendix)
     )
     transcript_ids = set(transcript_answers.keys())
     missing_from_appendix = transcript_ids - appendix_answer_ids
@@ -764,12 +779,22 @@ def check_coverage(
     """Every A-NNN in the transcript must be cited somewhere in the spec
     body (not counting the embedded appendix). Uncited answers mean the
     model dropped interview content on the floor.
+
+    A-AUTO-NNN entries are auto-discovered context (sourced from reality.md
+    or survey files), not user-answered requirements; they are NOT required
+    to be cited in the spec body. INTENT-01 (Phase 8) reads them directly
+    from the transcript. (Phase 1 / INTV-01 — see RESEARCH.md §Open Questions #2.)
     """
     cited: set[str] = set()
     for cite_match in CITATION_RE.finditer(body):
         for aid_match in ANSWER_REF_RE.finditer(cite_match.group(0)):
             cited.add(aid_match.group(0))
-    uncited = sorted(set(transcript_answers.keys()) - cited)
+    # Filter out A-AUTO-NNN before computing coverage diff — auto-facts are
+    # exempt from the UNCITED_ANSWERS check.
+    user_answered_keys = {
+        aid for aid in transcript_answers if not A_AUTO_ID_RE.match(aid)
+    }
+    uncited = sorted(user_answered_keys - cited)
     if uncited:
         report.fail(
             f"UNCITED_ANSWERS: {len(uncited)} transcript answer(s) are never "
@@ -779,6 +804,105 @@ def check_coverage(
             f"with a note, or remove them from the transcript if the user "
             f"retracted them."
         )
+
+
+def check_implicit_facts(
+    transcript_text: str,
+    transcript_answers: dict[str, Answer],
+    report: Report,
+) -> None:
+    """IMPLICIT_FACT tag validation (Phase 1 / INTV-01).
+
+    Three rules enforce the implicit-fact extraction contract:
+
+      1. Closed vocabulary — every [IMPLICIT_FACT:CATEGORY] tag in the
+         transcript text uses a known category from
+         VALID_IMPLICIT_FACT_CATEGORIES. Unknown categories fail with
+         UNKNOWN_IMPLICIT_FACT_CATEGORY.
+
+      2. A-AUTO-NNN well-formedness — every A-AUTO-NNN entry must have an
+         [IMPLICIT_FACT:CATEGORY] tag in its heading AND a [from <source>]
+         citation in its body. Missing tag fails with A_AUTO_MISSING_TAG;
+         missing citation fails with A_AUTO_MISSING_CITATION.
+
+      3. Non-skippable extraction — if the transcript has any answers, at
+         least one entry (A-NNN or A-AUTO-NNN) must carry an
+         [IMPLICIT_FACT:CATEGORY] tag, otherwise the R1.75 sub-step did
+         not attempt elicitation.
+
+    Phase 1 ↔ Phase 3 coordination: rule 3 ships as report.warn() (NOT
+    report.fail()) to preserve v4.2.0 backwards-compatibility — legacy
+    transcripts predating this phase have no IMPLICIT_FACT tags and must
+    continue to validate (exit 0). Phase 3 (TYPE-02) introduces
+    spec_format_version frontmatter and upgrades this warning to a hard
+    failure when spec_format_version >= v2.1. To find the upgrade site,
+    grep for IMPLICIT_FACT_SKIPPED in this file.
+    """
+    # Rule 1: Closed-vocabulary check — scan whole transcript text.
+    seen_unknown: set[str] = set()
+    for match in IMPLICIT_FACT_TAG_RE.finditer(transcript_text):
+        category = match.group(1)
+        if category not in VALID_IMPLICIT_FACT_CATEGORIES:
+            if category in seen_unknown:
+                continue
+            seen_unknown.add(category)
+            report.fail(
+                f"UNKNOWN_IMPLICIT_FACT_CATEGORY: '[IMPLICIT_FACT:{category}]' "
+                f"uses unknown category. Valid categories: "
+                f"{sorted(VALID_IMPLICIT_FACT_CATEGORIES)}. "
+                f"Use OTHER as escape hatch and name the actual category in "
+                f"the entry body (e.g., 'data residency: EU-only')."
+            )
+
+    # Rule 2: A-AUTO-NNN well-formedness.
+    # Note: ans.tags contains un-bracketed strings (parse_transcript strips the
+    # surrounding [] and comma-splits). Use IMPLICIT_FACT_TAG_INNER_RE to match
+    # the un-bracketed 'IMPLICIT_FACT:X' form, NOT IMPLICIT_FACT_TAG_RE which
+    # expects the bracketed form found in raw transcript text.
+    auto_ids = [aid for aid in transcript_answers if A_AUTO_ID_RE.match(aid)]
+    for aid in auto_ids:
+        ans = transcript_answers[aid]
+        has_implicit_tag = any(
+            IMPLICIT_FACT_TAG_INNER_RE.match(t) for t in ans.tags
+        )
+        if not has_implicit_tag:
+            report.fail(
+                f"A_AUTO_MISSING_TAG: {aid} is auto-discovered but has no "
+                f"[IMPLICIT_FACT:CATEGORY] tag in its heading. Auto-facts "
+                f"must declare a category from "
+                f"{sorted(VALID_IMPLICIT_FACT_CATEGORIES)}."
+            )
+        has_citation = bool(CITATION_RE.search(ans.body))
+        if not has_citation:
+            report.fail(
+                f"A_AUTO_MISSING_CITATION: {aid} has no [from <source>] "
+                f"citation in body. Auto-discovered facts must cite the "
+                f"source file or section that determined them (e.g., "
+                f"[from survey/architecture.md] or [from R1.5 research])."
+            )
+
+    # Rule 3: Non-skippable extraction (WARN in Phase 1, FAIL in Phase 3).
+    # Only fires when R2 actually ran (transcript has answers). This is a
+    # WARNING not a FAILURE so existing v4.2.0 transcripts (which lack
+    # IMPLICIT_FACT tags entirely) continue to validate. Phase 3's TYPE-02
+    # plan upgrades this to report.fail() when spec_format_version >= v2.1.
+    if transcript_answers:
+        any_tagged = any(
+            any(IMPLICIT_FACT_TAG_INNER_RE.match(t) for t in ans.tags)
+            for ans in transcript_answers.values()
+        )
+        if not any_tagged:
+            report.warn(
+                "IMPLICIT_FACT_SKIPPED: transcript has answers but no "
+                "[IMPLICIT_FACT:CATEGORY]-tagged entries. The R1.75 "
+                "implicit-fact extraction sub-step did not run or did not "
+                "emit any auto-facts/user-answered facts. Re-run with R1.75 "
+                "active, or add at least one A-AUTO-NNN entry citing "
+                "reality.md. NOTE: this is a WARNING in Phase 1 to preserve "
+                "v4.2.0 backwards-compatibility; Phase 3 (TYPE-02) upgrades "
+                "this to a hard FAILURE for specs declaring "
+                "spec_format_version >= v2.1."
+            )
 
 
 def check_survey_only_requirements(body: str, report: Report) -> None:
@@ -873,6 +997,7 @@ def main(argv: list[str]) -> int:
     check_arch_invariants_populated(body, transcript_answers, report)
     check_survey_only_requirements(body, report)
     check_coverage(body, transcript_answers, report)
+    check_implicit_facts(transcript_text, transcript_answers, report)  # Phase 1 / INTV-01
 
     # Dedupe failures (opportunistic + locked checks can fire on the same line)
     seen: set[str] = set()
