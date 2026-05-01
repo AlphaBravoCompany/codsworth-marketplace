@@ -725,6 +725,35 @@ These tagged answers become the `## Global Invariants` section of the final spec
 
 If the user's initial prompt already contains placement language, you MUST either confirm it with an explicit question (AskUserQuestion: "You said '{quote}' — is this a hard architectural constraint, or are you open to alternatives?") or carry it into the transcript as a Q-000/A-000 bootstrap entry quoting the prompt verbatim.
 
+#### 10. IMPLICIT-FACT TAGGING — environmental constraints become first-class transcript entries
+
+Environmental facts the user assumes but never states (deployment target, scale,
+runtime version, framework versions, security regime, network model) MUST appear
+as A-NNN or A-AUTO-NNN transcript entries with `[IMPLICIT_FACT:CATEGORY]` tags.
+Without this, INTENT-01 (Foundry Phase 8) is structurally blind to constraints
+the user takes for granted.
+
+The R1.75 sub-step (run before R2 free-form interview opens) walks the closed
+vocabulary and emits the gap-list. By the time R2 opens, every implicit fact
+is either:
+  - **A-AUTO-NNN entry** — auto-discovered from reality.md, tagged with
+    [IMPLICIT_FACT:CATEGORY] and a [from <source>] citation, OR
+  - **A-NNN entry** — user-answered gap-fill question, tagged with
+    [IMPLICIT_FACT:CATEGORY] in the heading.
+
+If during R2 the user mentions a NEW environmental fact that wasn't in the
+gap-list (e.g., user volunteers "we run this on edge POPs in 14 regions"),
+tag the relevant A-NNN with [IMPLICIT_FACT:NETWORK] or appropriate category
+in the transcript heading immediately after AskUserQuestion returns.
+
+**Format (strict — validator enforces):**
+  - `[IMPLICIT_FACT:CATEGORY]` with no whitespace inside brackets
+  - Category MUST be one of: DEPLOYMENT, SCALE, RUNTIME, FRAMEWORK_VERSION,
+    SECURITY, NETWORK, OTHER
+  - Use OTHER as escape hatch; name the actual category in the entry body
+    (e.g., "data residency: EU-only")
+  - Multiple tags allowed: `## A-008 [ARCH_INVARIANT, IMPLICIT_FACT:SECURITY]`
+
 ### DOMAIN DETECTION
 
 Analyze the feature request and classify which domains apply. This determines your question focus:
