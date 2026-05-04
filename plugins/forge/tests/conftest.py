@@ -24,6 +24,19 @@ This file exposes the following reusable fixtures:
   returning the captured ``CompletedProcess`` along with the resolved prompt
   file path (which contains the assembled R0-R4 instructions setup-forge writes
   before the interactive interview begins).
+- ``run_typed_validator_subprocess`` (Plan 02-01): function that synthesizes a
+  spec body containing the THREE Phase 2 typed tables (invariants /
+  state-transitions / contracts) — or omits them entirely when
+  ``with_typed_tables=False`` — and invokes validate-spec.py against it. Used
+  by Phase 2 RED stubs (test_typed_sections.py) to exercise check_typed_sections
+  rules 1/2/3 plus the legacy-v4.2.0 backwards-compat path. The builder shape
+  (Option A from 02-01-PLAN.md): ``_build_synthesized_spec`` is extended with a
+  ``with_typed_tables`` keyword + auxiliary keyword flags
+  (``inject_paraphrase``, ``inject_dangling_citation``,
+  ``state_transitions_sentinel``, ``contracts_sentinel``) so a single builder
+  serves both Phase 1 and Phase 2 fixtures. Phase 1's
+  ``run_validator_subprocess`` fixture continues to use the default
+  (``with_typed_tables=False``) and is unchanged in behavior.
 """
 
 from __future__ import annotations
@@ -166,7 +179,15 @@ def _build_global_invariants_block(
     return f'- **GI-001**: "{quote}" [from {aid}]\n'
 
 
-def _build_synthesized_spec(transcript_text: str) -> str:
+def _build_synthesized_spec(
+    transcript_text: str,
+    *,
+    with_typed_tables: bool = False,
+    inject_paraphrase: bool = False,
+    inject_dangling_citation: bool = False,
+    state_transitions_sentinel: bool = False,
+    contracts_sentinel: bool = False,
+) -> str:
     """Build a minimal valid spec body that pairs cleanly with ``transcript_text``.
 
     The validator (validate-spec.py) enforces several structural checks that
@@ -193,6 +214,35 @@ def _build_synthesized_spec(transcript_text: str) -> str:
     HAVE a quoted substring; absence of a quote is permitted in the relaxed
     fixture-test path. (Plan 03 / INTV-01 — see Plan 01-01 SUMMARY for
     background on why static fixtures don't work here.)
+
+    Phase 2 extension (Plan 02-01):
+
+    When ``with_typed_tables=True`` the builder additionally emits the THREE
+    Phase 2 typed tables (invariants / state-transitions / contracts) using
+    the column schemas locked in CONTEXT.md. Until Plan 02-03 ships
+    ``check_typed_sections``, these tables are inert — the validator does
+    not yet inspect them — so emitting them only matters once Plan 02-03
+    lands. Plan 02-01 RED stubs verify the validator surface (warnings,
+    failure tokens, exit codes) that 02-03 will produce; the typed-table
+    spec body shape is the input contract.
+
+    Auxiliary kwargs steer the Phase 2 negative tests:
+
+      * ``inject_paraphrase=True`` — emit a prose paragraph adjacent to the
+        invariants table whose tokens overlap a row's content cells at
+        Jaccard ≥0.7 (negative test for rule 3).
+      * ``inject_dangling_citation=True`` — append a row whose citation cell
+        cites ``A-999`` (an A-NNN not in the transcript) — negative test for
+        rule 2.
+      * ``state_transitions_sentinel=True`` — emit the documented sentinel
+        row in ``## State Transitions`` instead of a data row.
+      * ``contracts_sentinel=True`` — same shape, in ``## Contracts``.
+
+    When ``with_typed_tables=False`` (default — Phase 1 invocation path),
+    the three typed-table headings are OMITTED entirely. The result mirrors
+    Phase 1's builder behavior byte-identically so existing Phase 1 tests
+    that depend on ``run_validator_subprocess`` are not perturbed by the
+    Plan 02-01 extension.
     """
     user_ids = sorted(set(_A_HEADING_RE.findall(transcript_text)))
     auto_ids = sorted(set(_A_AUTO_HEADING_RE.findall(transcript_text)))
@@ -227,6 +277,27 @@ def _build_synthesized_spec(transcript_text: str) -> str:
         transcript_text, has_arch_invariant, primary_cite
     )
 
+    # Phase 2 typed-tables block. When disabled, the synthesized spec contains
+    # NO typed-table headings/sections at all (legacy v4.2.0 shape) — Plan
+    # 02-03's check_typed_sections rule 1 will warn TYPE_TABLES_MISSING.
+    if with_typed_tables:
+        gi_block += _build_invariants_table_block(
+            transcript_text,
+            user_ids,
+            primary_cite,
+            inject_paraphrase=inject_paraphrase,
+            inject_dangling_citation=inject_dangling_citation,
+        )
+        state_block = _build_state_transitions_section(
+            user_ids, sentinel=state_transitions_sentinel
+        )
+        contracts_block = _build_contracts_section(
+            user_ids, sentinel=contracts_sentinel
+        )
+    else:
+        state_block = ""
+        contracts_block = ""
+
     body = (
         "---\n"
         "spec_format_version: v2.0\n"
@@ -250,11 +321,185 @@ def _build_synthesized_spec(transcript_text: str) -> str:
         "\n"
         f"{gi_block}"
         "\n"
+        f"{state_block}"
+        f"{contracts_block}"
         "## Appendix: Interview Transcript\n"
         "\n"
         f"{transcript_text}\n"
     )
     return body
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 typed-table builders (Plan 02-01)
+# ---------------------------------------------------------------------------
+#
+# Schemas locked in 02-CONTEXT.md "Implementation Decisions / Table column
+# schemas":
+#
+#   Invariants:        ID | statement | applies-to | violation | citation     (5 cols)
+#   State-transitions: ID | from-state | to-state | trigger | guard | citation (6 cols)
+#   Contracts:         ID | surface | input | output | errors | citation     (6 cols)
+#
+# Sentinel-row form (per CONTEXT.md "Empty-table / non-applicable policy"):
+#   any non-ID content cell matches r"^\s*[Nn]one\s*[—\-]\s+.+"
+#
+# Citation-cell form (Locked-only):  [from A-NNN]
+# (no derived from, no survey/, no A-AUTO — TYPED_ROW_CITATION_RE in
+# validate-spec.py rejects those when Plan 02-03 ships.)
+
+
+def _build_invariants_table_block(
+    transcript_text: str,
+    user_ids: list[str],
+    primary_cite: str,
+    *,
+    inject_paraphrase: bool,
+    inject_dangling_citation: bool,
+) -> str:
+    """Return the body of the typed `## Global Invariants` invariants table.
+
+    Caller has already emitted the `## Global Invariants` heading + a
+    Locked-fidelity GI-NNN bullet. This builder appends the typed table
+    immediately after that bullet.
+
+    When ``inject_paraphrase`` is True, also emits a prose paragraph
+    immediately AFTER the table whose tokens overlap the first data row's
+    content cells at Jaccard >=0.7 — the fixture
+    ``transcript_typed_paraphrase_violation.md`` documents the manual Jaccard
+    computation; see that fixture's header for the math.
+
+    When ``inject_dangling_citation`` is True, appends an extra row citing
+    A-999 (an A-NNN guaranteed to be absent from the transcript fixture) so
+    Plan 02-03's rule-2 citation-integrity check fails.
+    """
+    arch_match = _ARCH_BLOCK_RE.search(transcript_text)
+    rows: list[str] = []
+
+    if arch_match:
+        aid = arch_match.group(1)
+        body = arch_match.group(3).strip()
+        body_no_cite = re.sub(
+            r"\[(?:from|derived from)\s+[^\]]+\]", "", body, flags=re.IGNORECASE
+        ).strip()
+        first_line = next(
+            (ln.strip() for ln in body_no_cite.splitlines() if ln.strip()), ""
+        )
+        # Trim to ~100 chars so the cell is readable.
+        statement = first_line[:120].rstrip(" ,.;:—-")
+
+        if inject_paraphrase:
+            # Tightly-coupled tokens — see fixture header for Jaccard math.
+            statement_cell = "operator package remain generic"
+            applies_to = "operator package"
+            violation = "agent specific types dispatcher"
+        else:
+            statement_cell = statement or "fixture invariant statement"
+            applies_to = "operator package"
+            violation = "Importing agent-specific packages from operator"
+
+        rows.append(
+            f"| GI-001 | {statement_cell} | {applies_to} | {violation} | [from {aid}] |"
+        )
+    else:
+        # No ARCH_INVARIANT — emit a sentinel-style row so the table at
+        # least has a presence row. Plan 02-03 may treat this as a sentinel
+        # exemption from rule 3.
+        cite = primary_cite if user_ids else "[from survey/architecture.md]"
+        rows.append(
+            f"| — | None — fixture has no architectural invariants | — | — | {cite} |"
+        )
+
+    if inject_dangling_citation:
+        # Append an extra row whose citation A-999 does NOT exist in the
+        # transcript. Plan 02-03's rule 2 citation-integrity check fails this
+        # with TYPED_ROW_DANGLING.
+        rows.append(
+            "| GI-002 | dangling-citation row content | applies | violation | [from A-999] |"
+        )
+
+    table = (
+        "\n"
+        "| ID | statement | applies-to | violation | citation |\n"
+        "|----|-----------|------------|-----------|----------|\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+
+    # When inject_paraphrase is True, also emit an adjacent prose paragraph
+    # whose tokens overlap the row's content cells at Jaccard >=0.7. The
+    # paragraph is structurally inside the same `## Global Invariants`
+    # section as the table, so Plan 02-03's rule-3 will collect it as
+    # adjacent prose.
+    if inject_paraphrase:
+        # Statement cell carries a citation [from A-001] (already in row),
+        # but the prose paragraph itself needs a traceable marker so
+        # check_universal_citations does not flag it. Use [from A-001].
+        cite = primary_cite if user_ids else "[from survey/architecture.md]"
+        prose = (
+            "\n"
+            "The operator package must remain generic. Agent specific types "
+            f"live in the dispatcher only. {cite}\n"
+        )
+        table = table + prose
+
+    return table
+
+
+def _build_state_transitions_section(
+    user_ids: list[str], *, sentinel: bool
+) -> str:
+    """Return the `## State Transitions` heading + table body."""
+    cite = f"[from {user_ids[0]}]" if user_ids else "[from survey/state.md]"
+
+    if sentinel:
+        # Documented sentinel row form per CONTEXT.md.
+        rows = [
+            f"| — | — | — | None — this feature has no state transitions | — | "
+            f"{cite} |"
+        ]
+    else:
+        rows = [
+            f"| ST-001 | RUNNING | COMPLETED | casting reaches DONE | "
+            f"F4 ASSAY signs off | {cite} |"
+        ]
+
+    return (
+        "## State Transitions\n"
+        "\n"
+        "| ID | from-state | to-state | trigger | guard | citation |\n"
+        "|----|------------|----------|---------|-------|----------|\n"
+        + "\n".join(rows)
+        + "\n"
+        "\n"
+    )
+
+
+def _build_contracts_section(user_ids: list[str], *, sentinel: bool) -> str:
+    """Return the `## Contracts` heading + table body."""
+    cite = f"[from {user_ids[0]}]" if user_ids else "[from survey/api.md]"
+
+    if sentinel:
+        rows = [
+            f"| — | None — no observable contracts beyond internal helper "
+            f"signatures | — | — | — | {cite} |"
+        ]
+    else:
+        rows = [
+            f"| CT-001 | Foundry-Accept-Casting | casting_id (string) | "
+            f"{{accepted: bool, provenance: {{sha256, mtime}}}} | "
+            f"INVALID_CASTING_ID, EVIDENCE_MISMATCH | {cite} |"
+        ]
+
+    return (
+        "## Contracts\n"
+        "\n"
+        "| ID | surface | input | output | errors | citation |\n"
+        "|----|---------|-------|--------|--------|----------|\n"
+        + "\n".join(rows)
+        + "\n"
+        "\n"
+    )
 
 
 @pytest.fixture
@@ -287,6 +532,87 @@ def run_validator_subprocess(
         transcript_text = Path(transcript_path).read_text(encoding="utf-8")
         synthesized = _build_synthesized_spec(transcript_text)
         synthesized_path = tmp_path / "synthesized-spec.md"
+        synthesized_path.write_text(synthesized, encoding="utf-8")
+        return subprocess.run(
+            [
+                "python3",
+                str(VALIDATE_SPEC),
+                str(synthesized_path),
+                str(transcript_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    return _runner
+
+
+@pytest.fixture
+def run_typed_validator_subprocess(
+    tmp_path: Path,
+) -> Callable[..., subprocess.CompletedProcess]:
+    """Phase 2 (Plan 02-01) subprocess fixture for typed-table tests.
+
+    Loads ``transcript_fixture_name`` from ``tests/fixtures/``, synthesizes a
+    spec body via ``_build_synthesized_spec(..., with_typed_tables=True, ...)``
+    (or ``with_typed_tables=False`` for the legacy-v4.2.0 backwards-compat
+    fixture), writes the synthesized spec to ``tmp_path``, and invokes
+    validate-spec.py against the (synthesized-spec, transcript) pair.
+
+    Usage:
+        # Happy path — three populated tables.
+        result = run_typed_validator_subprocess("transcript_typed_complete")
+        assert result.returncode == 0
+
+        # Negative — dangling citation A-999.
+        result = run_typed_validator_subprocess(
+            "transcript_typed_dangling_citation",
+            inject_dangling_citation=True,
+        )
+        assert result.returncode == 1
+        assert "TYPED_ROW_DANGLING" in result.stdout
+
+        # Backwards-compat — no typed tables emitted at all.
+        result = run_typed_validator_subprocess(
+            "transcript_typed_legacy_v420",
+            with_typed_tables=False,
+        )
+        assert result.returncode == 0  # warns but does not fail in Phase 2
+
+    The ``builder_kwargs`` are forwarded as-is to ``_build_synthesized_spec``.
+    ``with_typed_tables`` defaults to True (the typical Phase 2 path); set to
+    False explicitly for the legacy-v4.2.0 fixture path.
+
+    Phase 1's ``run_validator_subprocess`` is unchanged — Phase 2 fixtures
+    that need typed-tables synthesis call THIS fixture instead.
+    """
+
+    def _runner(
+        transcript_fixture_name: str,
+        *,
+        with_typed_tables: bool = True,
+        **builder_kwargs,
+    ) -> subprocess.CompletedProcess:
+        # Resolve fixture path. Accept the bare stem (no .md) or the full
+        # filename — Phase 2 fixtures all live under fixtures_dir.
+        fixture_basename = transcript_fixture_name
+        if not fixture_basename.endswith(".md"):
+            fixture_basename = f"{fixture_basename}.md"
+        transcript_path = FIXTURES_DIR / fixture_basename
+        if not transcript_path.is_file():
+            raise FileNotFoundError(
+                f"Phase 2 fixture missing: {transcript_path}. "
+                f"Plan 02-01 should have created it."
+            )
+
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+        synthesized = _build_synthesized_spec(
+            transcript_text,
+            with_typed_tables=with_typed_tables,
+            **builder_kwargs,
+        )
+        synthesized_path = tmp_path / "synthesized-typed-spec.md"
         synthesized_path.write_text(synthesized, encoding="utf-8")
         return subprocess.run(
             [
