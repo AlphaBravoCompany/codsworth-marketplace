@@ -87,7 +87,18 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
 **Procedure (V2 mode):**
 
 1. Read the spec in full. Read research findings (`research/SUMMARY.md` or `research/*.md`). Read `patterns/PATTERNS.md` from F0.6 — every per-file analog excerpt and every shared-patterns block goes into a casting prompt below.
-2. **Extract global invariants.** If `spec.md` has a `## Global Invariants` section (or `<global_invariants>` block), copy it verbatim to `manifest.global_invariants` — INCLUDING any `### Architectural Placement` / `### Cross-Cutting Technical Rules` subsections, GI-NNN entries with `[from A-NNN]` citations, and the literal "None — the user gave no explicit placement constraints." sentinel if the forge spec wrote that. Otherwise empty string. **Never paraphrase, never filter, never omit subsections.** Forge specs always have this section; if it's missing, the spec was either hand-written or forge failed validation. For forge-generated specs that contain the sentinel, propagate the sentinel verbatim — downstream PROVE/TRACE read it as "no placement rules to enforce for this run." The `<global_invariants>` block in every casting prompt is the only channel through which architectural-placement constraints reach CAST teammates; an empty block when the spec had real constraints means every casting will be built in a constraint-free context and will likely place code in the wrong architectural layer.
+2. **Extract global invariants and typed tables.** If `spec.md` has a `## Global Invariants` section (or `<global_invariants>` block), copy it verbatim to `manifest.global_invariants` — INCLUDING any `### Architectural Placement` / `### Cross-Cutting Technical Rules` subsections (legacy, pre-Phase-2 specs), GI-NNN entries with `[from A-NNN]` citations, and the literal "None — the user gave no explicit placement constraints." sentinel if the forge spec wrote that. Otherwise empty string. **Never paraphrase, never filter, never omit subsections.** Forge specs always have this section; if it's missing, the spec was either hand-written or forge failed validation. For forge-generated specs that contain the sentinel, propagate the sentinel verbatim — downstream PROVE/TRACE read it as "no placement rules to enforce for this run." The `<global_invariants>` block in every casting prompt is the only channel through which architectural-placement constraints reach CAST teammates; an empty block when the spec had real constraints means every casting will be built in a constraint-free context and will likely place code in the wrong architectural layer.
+
+   Note: Phase 2 / TYPE-01 dropped the `### Architectural Placement` / `### Cross-Cutting Technical Rules` subheadings inside `## Global Invariants` — the section is now a flat 5-column markdown table whose `applies-to` column carries the same information at row granularity. Pre-Phase-2 specs may still have the subheadings; preserve them verbatim if present (forge specs are forward-compatible — old `<global_invariants>` block content stays valid).
+
+   ALSO extract three typed-section bodies (Phase 2 / TYPE-01 — V2 only):
+   - **`manifest.invariants_table`** — verbatim body of `## Global Invariants` markdown table (the 5-column table that replaced GI-NNN bullets at Phase 2 Plan 02-02). The table body only, no `## ` heading line. Preserve every row as-is, including any sentinel row.
+   - **`manifest.state_transitions_table`** — verbatim body of `## State Transitions` markdown table (6 columns: ID | from-state | to-state | trigger | guard | citation). Heading line excluded. Preserve sentinel rows verbatim.
+   - **`manifest.contracts_table`** — verbatim body of `## Contracts` markdown table (6 columns: ID | surface | input | output | errors | citation). Heading line excluded. Preserve sentinel rows verbatim.
+
+   If any of these three sections is missing from spec.md (legacy v4.2.0 specs synthesized before Phase 2 land), set the corresponding manifest field to the empty string AND emit a `decompose_warning: typed_section_missing/{section_name}` record. Phase 3 (TYPE-02) `spec_format_version` frontmatter is the actual mode switch; until then, missing typed sections are non-fatal at decompose time but downstream agents (Phase 6 PROBE-01, Phase 7 TEST-01, Phase 8 INTENT-01) will receive empty blocks and may emit lower-confidence findings.
+
+   **Never paraphrase, never filter, never omit.** The typed-table propagation is the citation surface for adversarial spec review and code-blind testing — paraphrase would defeat the deterministic grep contract.
 3. **Extract mandatory rules.** If `codebase/MANDATORY_RULES.md` exists from F0 mapping, copy its body verbatim to `manifest.mandatory_rules`. Otherwise empty string. Never filter.
 3a. **Index PATTERNS.md by file.** If `patterns/PATTERNS.md` is not the SKIPPED sentinel: parse `## File Classification` into a lookup `{file_path → analog, match_quality}`. Parse `## Pattern Assignments` into per-file blocks `{file_path → full block (Imports + Setup + Core + Error)}`. Parse `## Shared Patterns` into `{role → list of excerpts with "Apply to:" lines}`. If PATTERNS.md is SKIPPED, every casting's `<analog_pattern>` block is the sentinel `Pattern map skipped — {reason}. Use research and codebase conventions instead.` and every `<shared_patterns>` block is empty.
 4. Identify 2-5 domains. Spawn parallel **background** Agents (1 per domain, max 5; `subagent_type='general-purpose'`, `run_in_background=true`, `mode='bypassPermissions'`). No team needed — these are short-lived file writers and don't need `TeamCreate`/shutdown coordination. Each agent writes:
@@ -106,6 +117,30 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
    <global_invariants>
    {Verbatim content of manifest.global_invariants — byte-identical across every casting in this run}
    </global_invariants>
+
+   <invariants>
+   {Verbatim content of manifest.invariants_table — byte-identical across every casting in this run}
+   </invariants>
+
+   <state_transitions>
+   {Verbatim content of manifest.state_transitions_table — byte-identical across every casting in this run}
+   </state_transitions>
+
+   <contracts>
+   {Verbatim content of manifest.contracts_table — byte-identical across every casting in this run}
+   </contracts>
+
+   <!--
+   Phase 2 / TYPE-01: typed-table blocks above (<invariants> / <state_transitions> /
+   <contracts>) are the citation surface for Phase 6 PROBE-01 (orphan-row
+   detection), Phase 7 TEST-01 (hypothesis-jsonschema strategy derivation), and
+   Phase 8 INTENT-01 (A-NNN × casting_id matrix). Block content is byte-identical
+   across every casting in the wave to preserve wave-level prompt cache locality.
+   Block order is locked: <mandatory_rules> → <global_invariants> → <invariants>
+   → <state_transitions> → <contracts> → <spec_requirements> → <analog_pattern>
+   → <shared_patterns>. Do NOT interleave with <analog_pattern> or
+   <shared_patterns>; cache locality breaks if order shifts.
+   -->
 
    <spec_requirements>
    {Verbatim spec text for this casting's ACs — char-for-char from spec.md}
@@ -159,6 +194,8 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
 ### F0.5 V3: PACKET-DERIVED DECOMPOSE
 
 When the spec references a flow delta, decomposition becomes **deterministic** — each packet in `flow-delta.json` becomes exactly one casting, and each casting's teammate prompt is generated directly from the packet, the flow graph, and the sibling patterns the flow graph anchors.
+
+**Phase 2 / TYPE-01 note (V3-specific):** V3 castings do NOT receive the three Phase 2 typed-table blocks (`invariants`, `state_transitions`, `contracts` — the V2 prompt-template names). The flow-delta (`flow-delta.json` + `flow-graph.json`) is V3's structural anchor; spec.md exists only as a compatibility layer. The typed-table propagation is V2-only — typed tables do not apply to V3 because flow-delta is the structural anchor. If a V3 spec.md happens to contain typed sections (e.g., it was synthesized after a Phase 2 forge run), `manifest.invariants_table` / `manifest.state_transitions_table` / `manifest.contracts_table` may be populated for V3, but the V3 prompt template intentionally does not surface them — the per-packet `<upstream_anchor>` / `<prerequisite_hops>` / `<this_hop>` / `<downstream_contract>` blocks already carry equivalent information at hop granularity. Phase 6 PROBE-01, Phase 7 TEST-01, and Phase 8 INTENT-01 declare V2-only minimum spec_format_version (set in their agent metadata at Phase 3 / TYPE-02); F0.5 DECOMPOSE will emit `stream-skipped: {stream_id}, reason: spec_format_version` for V3 runs. Phase 2 ships this V3-vs-V2 mode separation as documentation only; Phase 3 lands the spec_format_version frontmatter that machine-enforces it.
 
 **Inputs:**
 - `flow-delta.json` — ordered list of packets from Forge V3 R3.
@@ -283,7 +320,16 @@ Call `Foundry-Validate-Castings` — runs 10 dimensions:
 4. Key Links Planned (artifacts wired)
 5. Scope Sanity (≤8 key_files, user-facing truths)
 6. Research Integration
-7. **Prompt Fidelity** — every prompt has `<spec_requirements>` (char-for-char from spec), no forbidden phrases, sub-check 7e verifies `<global_invariants>` propagation, sub-check 7g verifies `<mandatory_rules>` propagation
+7. **Prompt Fidelity** — every prompt has `<spec_requirements>` (char-for-char from spec), no forbidden phrases, sub-check 7e verifies `<global_invariants>` propagation, sub-check 7g verifies `<mandatory_rules>` propagation, **sub-checks 7h / 7i / 7j verify the three Phase 2 / TYPE-01 typed-table blocks** (`<invariants>` / `<state_transitions>` / `<contracts>`) are byte-identical across every casting and match the corresponding manifest field. V2 mode only — V3 castings do not have `<invariants>` / `<state_transitions>` / `<contracts>` blocks, and sub-checks 7h / 7i / 7j are skipped for V3 runs.
+
+   Sub-check details (parallel shape — diagnostic precision over a composite check, per RESEARCH.md Open Question 4):
+
+   - **7h. `<invariants>` propagation byte-identical to manifest.** Every V2 casting prompt must contain a `<invariants>` block whose content is byte-identical to `manifest.invariants_table`. Error if missing entirely; error if non-empty manifest field but empty/missing block; error if content drifts from manifest (any byte difference). Empty manifest field (legacy v4.2.0 spec or sentinel-only invariants section) → empty `<invariants>` block is acceptable; F0.5 step 2 emits `decompose_warning: typed_section_missing/invariants` for that case. Diagnostic precision over composite check: a failure here pinpoints `<invariants>` specifically — easier to triage than a "typed-table propagation failed" composite error. Skipped for V3.
+
+   - **7i. `<state_transitions>` propagation byte-identical to manifest.** Same shape as 7h, applied to the `<state_transitions>` block and `manifest.state_transitions_table`. Sentinel rows (e.g., `None — this feature has no state transitions`) MUST propagate byte-identical — the sentinel is the explicit-acknowledgement signal, not a placeholder for "we forgot." Skipped for V3.
+
+   - **7j. `<contracts>` propagation byte-identical to manifest.** Same shape as 7h, applied to the `<contracts>` block and `manifest.contracts_table`. Sentinel rows MUST propagate byte-identical (same rationale as 7i). Skipped for V3.
+
 8. **Migration Coverage** — MIGRATION specs only; 1:1 coverage_list
 9. **Spec Structure** — spec has tagged req IDs (error); spec has `## Global Invariants` section (warning)
 10. **File Change Map ↔ key_files cross-check** — every file in spec's `## File Change Map` must appear in exactly one casting's key_files (error if orphaned — the change is unimplementable). Files in key_files but not in the map are flagged as scope creep (warning). Skipped if the spec has no File Change Map section.
