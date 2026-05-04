@@ -27,6 +27,7 @@ finalization must not proceed.
 from __future__ import annotations
 
 import re
+import string
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -121,6 +122,76 @@ A_AUTO_BLOCK_RE = re.compile(
     r"\s*\n(.*?)"
     r"(?=^##\s+[AQ]-\d+|^##\s+A-AUTO-\d+|^##\s+[A-Z]|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+
+# Typed-section validation (Phase 2 / TYPE-01).
+# These constants support the check_typed_sections() validator which enforces
+# the three TYPE-01 rules on the typed tables emitted at R3 SPEC FORGED:
+#   1. Presence — `## Global Invariants` / `## State Transitions` /
+#      `## Contracts` headings each carry a markdown table with the documented
+#      column count + at least one data row or a sentinel row. Phase 2 ships
+#      this rule as report.warn() (TYPE_TABLES_MISSING) for backwards-compat;
+#      Phase 3 (TYPE-02) upgrades to report.fail() when
+#      spec_format_version >= v2.1.
+#   2. Citation integrity — every row's citation cell parses as
+#      `[from A-NNN]` (Locked form ONLY); cited A-NNN exists in the
+#      transcript; row's `statement` quotes verbatim from the cited body.
+#   3. Content-difference — each non-sentinel row's content tokens have
+#      Jaccard < 0.7 vs. the same `## ` section's prose tokens (rejects
+#      paraphrase-from-prose fabrication).
+TYPED_SECTION_HEADINGS = ("Global Invariants", "State Transitions", "Contracts")
+
+INVARIANTS_TABLE_COLUMNS = (
+    "ID",
+    "statement",
+    "applies-to",
+    "violation",
+    "citation",
+)
+STATE_TRANSITIONS_TABLE_COLUMNS = (
+    "ID",
+    "from-state",
+    "to-state",
+    "trigger",
+    "guard",
+    "citation",
+)
+CONTRACTS_TABLE_COLUMNS = (
+    "ID",
+    "surface",
+    "input",
+    "output",
+    "errors",
+    "citation",
+)
+
+# Sentinel detection — match "None — ..." or "None - ..." in any non-ID,
+# non-citation content cell. Permissive cell-level detection because the
+# sentinel may appear in different cells across the three tables (e.g.,
+# contracts sentinel lands in `surface` column; state-transitions sentinel
+# lands in `trigger` column).
+TYPED_SENTINEL_RE = re.compile(r"^\s*[Nn]one\s*[—\-]\s+.+")
+
+# Locked-only citation form (Phase 2 rule 2). Matches the strict
+# `[from A-NNN]` shape. The existing CITATION_RE is too permissive (it
+# accepts `[derived from ...]`) so this regex is independently maintained.
+# Rejects: `[derived from A-NNN]`, `[from survey/...]`, `[from R1.5 research]`,
+# `[from A-AUTO-NNN]`.
+TYPED_ROW_CITATION_RE = re.compile(r"^\s*\[from\s+(A-\d+)\s*\]\s*$")
+
+# Jaccard content-difference threshold (rule 3). Hard-coded per CONTEXT.md;
+# configurable threshold deferred to v2+.
+JACCARD_REJECTION_THRESHOLD = 0.7
+
+# Stop-word list for Jaccard tokenization — small fixed English list per
+# CONTEXT.md "Content-difference scope". Domain-specific stop-words deferred.
+_TYPED_STOP_WORDS = frozenset(
+    {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "of", "in", "on", "at", "to", "for", "with", "by", "from", "as",
+        "and", "or", "but", "if", "then", "else", "this", "that", "these",
+        "those",
+    }
 )
 
 QUOTED_STRING_RE = re.compile(r'"([^"\n]{3,})"')
@@ -340,6 +411,86 @@ def extract_section(text: str, heading_name: str) -> str | None:
         if name.lower().startswith(target):
             return text[start:end]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Typed-section helpers (Phase 2 / TYPE-01)
+# ---------------------------------------------------------------------------
+
+# Punctuation-strip translation table for _tokenize. Built once at module
+# import; reused for every row-cell and prose tokenization in
+# check_typed_sections.
+_TYPED_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+
+
+def _iter_table_rows(section_body: str) -> Iterable[list[str]]:
+    """Yield each markdown table data row as list[cell_text].
+
+    Skips the header row (first row containing only column names) and the
+    separator row (`|---|---|`). Strips leading/trailing pipes and whitespace
+    from each cell. Returns an empty iterator if no markdown table is present.
+
+    Used by check_typed_sections to walk each typed section's table without
+    pulling in an external markdown parser. Phase 1 / RESEARCH.md "Don't
+    Hand-Roll" notes the existing iter_sections + regex approach handles the
+    in-repo `## Technical Design` tables correctly; this helper reuses the
+    same shape at row granularity.
+    """
+    in_table = False
+    for line in section_body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            in_table = False
+            continue
+        # Separator row: "|---|---|" (any combination of -, :, |, whitespace)
+        if re.match(r"^\|[\s|:\-]+\|$", stripped):
+            in_table = True
+            continue
+        if not in_table:
+            # Header row before the separator — skip silently.
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        yield cells
+
+
+def _tokenize(text: str) -> frozenset[str]:
+    """Lowercase + punctuation-strip + split + stop-word remove + dedupe.
+
+    Used by Jaccard rule 3 — both row content cells and section prose are
+    tokenized through this helper to ensure consistent comparison
+    (RESEARCH.md Pitfall 6 — tokenizer inconsistency across cells/prose).
+    """
+    cleaned = text.translate(_TYPED_PUNCT_TABLE).lower()
+    return frozenset(
+        w for w in cleaned.split() if w and w not in _TYPED_STOP_WORDS
+    )
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    """Jaccard similarity — empty union is vacuously 0 (rule 3 satisfied)."""
+    if not a and not b:
+        return 0.0
+    union = a | b
+    if not union:
+        return 0.0
+    return len(a & b) / len(union)
+
+
+def _strip_table_lines(section_body: str) -> str:
+    """Return section_body with markdown table lines, headings, and
+    blockquotes removed — used to compute the prose token-set for rule 3.
+    """
+    lines = []
+    for line in section_body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            continue  # table row (header, separator, or data)
+        if stripped.startswith("#"):
+            continue  # heading
+        if stripped.startswith(">"):
+            continue  # blockquote
+        lines.append(line)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
