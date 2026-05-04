@@ -219,6 +219,13 @@ REQUIRED_CITATION_SECTIONS = {
     "file change map",
     "observable truths",
     "codebase references",
+    # Phase 2 / TYPE-01: typed-section tables also enforce per-row citation
+    # discipline via the existing _line_has_traceable_marker logic. The
+    # row-scoped TYPED_ROW_BAD_CITATION check in check_typed_sections is
+    # stricter (Locked-only `[from A-NNN]` form), but inheriting the generic
+    # citation discipline catches accidentally-uncited rows uniformly.
+    "state transitions",
+    "contracts",
 }
 
 # Sentinels and scaffolding that do NOT need citations.
@@ -477,8 +484,14 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
 
 
 def _strip_table_lines(section_body: str) -> str:
-    """Return section_body with markdown table lines, headings, and
-    blockquotes removed — used to compute the prose token-set for rule 3.
+    """Return section_body with markdown table lines, headings, blockquotes,
+    and bullet items removed — used to compute the prose token-set for rule 3.
+
+    Bullets (e.g., Locked `**GI-NNN**` items) are themselves transcript-cited
+    structural data, not free-form prose. Including them in the "adjacent
+    prose" token-set would dilute the Jaccard union and mask real paraphrase
+    violations from genuine free-form prose paragraphs the rule is designed
+    to catch.
     """
     lines = []
     for line in section_body.splitlines():
@@ -489,6 +502,8 @@ def _strip_table_lines(section_body: str) -> str:
             continue  # heading
         if stripped.startswith(">"):
             continue  # blockquote
+        if stripped.startswith(("-", "*")):
+            continue  # bullet item — Locked structural data, not prose
         lines.append(line)
     return "\n".join(lines)
 
@@ -1056,6 +1071,226 @@ def check_implicit_facts(
             )
 
 
+def check_typed_sections(
+    body: str,
+    transcript_answers: dict[str, Answer],
+    report: Report,
+) -> None:
+    """Typed-section validation (Phase 2 / TYPE-01).
+
+    Three rules enforce the typed-table contract on the three typed sections
+    emitted at R3 SPEC FORGED:
+
+      1. Presence — each of `## Global Invariants` / `## State Transitions` /
+         `## Contracts` must contain a markdown table with the documented
+         column count AND either >=1 data row or exactly 1 sentinel row.
+         WARNING in Phase 2 for backwards-compat (TYPE_TABLES_MISSING);
+         Phase 3 (TYPE-02) upgrades to FAIL when spec_format_version >= v2.1.
+
+      2. Citation integrity — every row's citation cell parses as
+         `[from A-NNN]` (Locked form only); cited A-NNN exists in
+         transcript; row's `statement` cell quotes verbatim from the
+         cited A-NNN body. Failures: TYPED_ROW_BAD_CITATION /
+         TYPED_ROW_DANGLING / TYPED_ROW_NOT_VERBATIM (hard fail).
+
+      3. Content-difference — for each data row (sentinel rows exempt):
+         tokenize the row's content cells (excluding ID + citation);
+         collect token-set of all non-table prose paragraphs in the same
+         `## ` section; reject if Jaccard >= JACCARD_REJECTION_THRESHOLD
+         (0.7) with TYPED_ROW_PARAPHRASE (hard fail).
+
+    Phase 2 ↔ Phase 3 coordination: rule 1 ships as report.warn() with
+    TYPE_TABLES_MISSING / spec_format_version / Phase 3 / TYPE-02 tokens
+    in the warning text. Phase 3 reads spec_format_version frontmatter
+    and upgrades to report.fail() when >= v2.1. Search TYPE_TABLES_MISSING
+    in this file for the upgrade site (one-line edit, no re-author).
+
+    Rules 2 and 3 ship as hard fails immediately — they only fire when
+    typed sections exist and contain rows, so legacy specs (no tables, no
+    rows) trip rule 1 only. V3 specs (which use flow-delta as their
+    structural anchor and don't carry typed tables in spec.md
+    compatibility layer) trip rule 1 as a warning, never a hard fail
+    in Phase 2 — Phase 3's spec_format_version frontmatter is the
+    actual V2/V3 mode switch.
+    """
+    # Per-section column expectation map for rule 1 / rule 2 row parsing.
+    section_columns = {
+        "global invariants": INVARIANTS_TABLE_COLUMNS,
+        "state transitions": STATE_TRANSITIONS_TABLE_COLUMNS,
+        "contracts": CONTRACTS_TABLE_COLUMNS,
+    }
+
+    # ---- Rule 1: Presence ----
+    # Each of the three required headings must have a table with the
+    # documented column count AND >=1 data row OR exactly 1 sentinel row.
+    # Phase 2 ships as report.warn() for backwards-compat.
+    section_bodies: dict[str, str] = {}
+    for heading_lower, expected_cols in section_columns.items():
+        section_body = extract_section(body, heading_lower) or ""
+        section_bodies[heading_lower] = section_body
+        rows = list(_iter_table_rows(section_body))
+        if not section_body.strip() or not rows:
+            report.warn(
+                f"TYPE_TABLES_MISSING: spec is missing the "
+                f"'## {heading_lower.title()}' typed section or its markdown "
+                f"table. Phase 6 PROBE-01, Phase 7 TEST-01, and Phase 8 "
+                f"INTENT-01 require these typed tables as their citation "
+                f"surface. NOTE: this is a WARNING in Phase 2 to preserve "
+                f"v4.2.0 backwards-compatibility; Phase 3 (TYPE-02) upgrades "
+                f"this to a hard FAILURE for specs declaring "
+                f"spec_format_version >= v2.1."
+            )
+            continue
+        # Column-count check on the first data row (or sentinel row).
+        first_row = rows[0]
+        if len(first_row) != len(expected_cols):
+            report.fail(
+                f"TYPED_SECTION_MALFORMED: '## {heading_lower.title()}' "
+                f"table has {len(first_row)} columns; expected "
+                f"{len(expected_cols)} ({' | '.join(expected_cols)}). "
+                f"Re-emit the table with the documented column shape per "
+                f"setup-forge.sh SPEC TEMPLATE block."
+            )
+
+    # ---- Rule 2 + Rule 3 iterate per row of each present section ----
+    for heading_lower, expected_cols in section_columns.items():
+        section_body = section_bodies.get(heading_lower, "")
+        if not section_body:
+            continue  # rule 1 already warned
+        rows = list(_iter_table_rows(section_body))
+        if not rows:
+            continue
+
+        # Tokenize section prose ONCE for rule 3 (reused per row).
+        # Strip citation markers (`[from A-NNN]`, `[derived from ...]`) from
+        # the prose before tokenizing — citations are provenance metadata,
+        # not content, and should not count toward content-overlap (this
+        # mirrors how _iter_table_rows treats the citation cell as separate
+        # from row content).
+        prose_text = _strip_table_lines(section_body)
+        prose_text = CITATION_RE.sub("", prose_text)
+        prose_tokens = _tokenize(prose_text)
+
+        # Verbatim check (rule 2) only applies when column index 1 is the
+        # literal "statement" column — i.e., the Invariants table. State
+        # Transitions has `from-state` at index 1 (canonical state names,
+        # not transcript quotes); Contracts has `surface` at index 1
+        # (canonical surface/endpoint names). Per CONTEXT.md decisions,
+        # only `statement` is required to be verbatim from the cited body.
+        check_verbatim = (
+            len(expected_cols) >= 2 and expected_cols[1] == "statement"
+        )
+
+        for row_idx, cells in enumerate(rows):
+            if len(cells) != len(expected_cols):
+                # Already flagged in rule 1 (column-count mismatch).
+                continue
+
+            # Detect sentinel row — exempt from rule 2 verbatim and rule 3.
+            # Permissive: match the sentinel pattern in any non-ID,
+            # non-citation cell (sentinel may land in `surface` for contracts,
+            # `trigger` for state-transitions, etc.) — see CONTEXT.md
+            # "Empty-table / non-applicable policy" + RESEARCH.md Open
+            # Question 2.
+            is_sentinel = any(
+                TYPED_SENTINEL_RE.match(cell) for cell in cells[1:-1]
+            )
+
+            citation_cell = cells[-1]
+
+            # ---- Rule 2: Citation integrity ----
+            if is_sentinel:
+                # Sentinel: extract any A-NNN reference; if present, must
+                # exist in transcript. Sentinels may use looser citation
+                # forms (e.g., `[from A-NNN reasoning]` or
+                # `[from survey reasoning]`) per CONTEXT.md.
+                aid_matches = ANSWER_REF_RE.findall(citation_cell)
+                for aid in aid_matches:
+                    if aid not in transcript_answers:
+                        report.fail(
+                            f"TYPED_ROW_DANGLING: '## "
+                            f"{heading_lower.title()}' sentinel row cites "
+                            f"{aid} but transcript has no such answer. The "
+                            f"sentinel's citation must point at the "
+                            f"transcript answer that justified the absence "
+                            f"(e.g., user said the feature has no state "
+                            f"transitions)."
+                        )
+            else:
+                # Data row: strict Locked-only citation form.
+                cite_match = TYPED_ROW_CITATION_RE.match(citation_cell)
+                if not cite_match:
+                    report.fail(
+                        f"TYPED_ROW_BAD_CITATION: '## "
+                        f"{heading_lower.title()}' row {row_idx + 1} "
+                        f"citation cell {citation_cell!r} does not match "
+                        f"the required Locked-only form '[from A-NNN]'. "
+                        f"Survey-derived facts go in '## Technical Design' "
+                        f"prose, never in typed tables. Reject reasons: "
+                        f"'[derived from ...]', '[from survey/...]', "
+                        f"'[from R1.5 research]', '[from A-AUTO-NNN]' are "
+                        f"all forbidden in typed-row citations."
+                    )
+                    continue
+                cited_aid = cite_match.group(1)
+                if cited_aid not in transcript_answers:
+                    report.fail(
+                        f"TYPED_ROW_DANGLING: '## "
+                        f"{heading_lower.title()}' row {row_idx + 1} cites "
+                        f"{cited_aid} but transcript has no such answer."
+                    )
+                    continue
+                # Verbatim check: row's `statement` cell (cell index 1 —
+                # second column, always after ID) tokens must appear in
+                # the cited A-NNN body. Only applies to tables where index
+                # 1 is the literal "statement" column (Invariants); for
+                # State Transitions and Contracts, index 1 is `from-state`
+                # / `surface` which carry canonical names not transcript
+                # quotes (per CONTEXT.md table column schemas).
+                if check_verbatim:
+                    statement_cell = cells[1] if len(cells) > 1 else ""
+                    if statement_cell:
+                        normalized_stmt = normalize_for_compare(statement_cell)
+                        normalized_body = normalize_for_compare(
+                            transcript_answers[cited_aid].body
+                        )
+                        if (
+                            normalized_stmt
+                            and normalized_stmt not in normalized_body
+                        ):
+                            report.fail(
+                                f"TYPED_ROW_NOT_VERBATIM: '## "
+                                f"{heading_lower.title()}' row "
+                                f"{row_idx + 1} statement "
+                                f"{statement_cell!r} does not appear "
+                                f"verbatim in cited answer {cited_aid}'s "
+                                f"body. Typed-row statements must quote "
+                                f"verbatim from the Locked transcript "
+                                f"answer; paraphrase is rejected (the 70%% "
+                                f"Jaccard rule is the prose-side backstop)."
+                            )
+
+            # ---- Rule 3: Content-difference (sentinel rows exempt) ----
+            if is_sentinel:
+                continue
+            # Tokenize row content cells (skip ID at index 0 and citation
+            # at index -1).
+            row_content_text = " ".join(cells[1:-1])
+            row_tokens = _tokenize(row_content_text)
+            similarity = _jaccard(row_tokens, prose_tokens)
+            if similarity >= JACCARD_REJECTION_THRESHOLD:
+                report.fail(
+                    f"TYPED_ROW_PARAPHRASE: '## {heading_lower.title()}' "
+                    f"row {row_idx + 1} content overlaps section prose at "
+                    f"Jaccard={similarity:.2f} (threshold "
+                    f"{JACCARD_REJECTION_THRESHOLD}). Typed-row content "
+                    f"must come from the transcript, not be paraphrased "
+                    f"from spec prose. If the transcript does not support "
+                    f"the row, the row should not exist — go back to the "
+                    f"transcript or write a sentinel row."
+                )
+
+
 def check_survey_only_requirements(body: str, report: Report) -> None:
     """FR/NFR items under Locked/Flexible whose only citation is
     [from survey/...] — these imply a requirement inferred from the codebase,
@@ -1149,6 +1384,7 @@ def main(argv: list[str]) -> int:
     check_survey_only_requirements(body, report)
     check_coverage(body, transcript_answers, report)
     check_implicit_facts(transcript_text, transcript_answers, report)  # Phase 1 / INTV-01
+    check_typed_sections(body, transcript_answers, report)  # Phase 2 / TYPE-01
 
     # Dedupe failures (opportunistic + locked checks can fire on the same line)
     seen: set[str] = set()
