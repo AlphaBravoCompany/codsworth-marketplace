@@ -951,24 +951,60 @@ Take your time. A thorough spec prevents weeks of back-and-forth during implemen
 
 ## Global Invariants
 
-> **Cross-cutting rules that apply to every casting.** Each invariant MUST be a direct quote from the transcript with a citation. No paraphrase. Foundry decompose copies this section verbatim into every casting's `<global_invariants>` block; PROVE and TRACE enforce architectural placement against it.
+> **Cross-cutting rules that apply to every casting.** Each row is a direct quote from a transcript answer tagged `[ARCH_INVARIANT]` during R2, with a Locked-only `[from A-NNN]` citation. No paraphrase. Foundry decompose copies this section verbatim into every casting's `<global_invariants>` block; PROVE and TRACE enforce architectural placement against it.
 
-### Architectural Placement
+Each row in this table is an architectural-placement or cross-cutting invariant the user explicitly stated during the interview. Every row cites the `[ARCH_INVARIANT]`-tagged A-NNN it came from. The `applies-to` column tells downstream agents (PROBE-01, INTENT-01) which files/layers/components the invariant constrains; the `violation` column gives a concrete example of the prohibited shape so PROVE/TRACE can grep for it.
 
-Rules about *where code lives*, *which layer owns what*, *what components must not know about*. These are the most important invariants — violating them produces code in the wrong layer and requires full revert cycles.
+| ID     | statement                                                          | applies-to                | violation                                            | citation     |
+|--------|--------------------------------------------------------------------|---------------------------|------------------------------------------------------|--------------|
+| GI-001 | "exact quoted user text describing a placement rule"               | {which files/layers}      | {concrete example of what NOT to do}                 | [from A-NNN] |
+| GI-002 | "next invariant — verbatim quote of the user's words"              | {which files/layers}      | {violation example}                                  | [from A-NNN] |
 
-- **GI-001** [from A-NNN]: "exact quoted user text describing a placement rule"
-  - Applies to: {which files/layers this constrains}
-  - Violation looks like: {concrete example of what NOT to do}
-- **GI-002** [from A-NNN]: "..."
+**Sentinel example** (use this exact shape if the user gave no `[ARCH_INVARIANT]`-tagged answers in R2 — exactly one row, replacing `A-003` with the framing answer that justified the conclusion):
 
-*(If the user made no architectural-placement statements in the transcript, write "None — the user gave no explicit placement constraints." Do NOT invent invariants.)*
+| —      | None — the user gave no explicit placement constraints.            | —                         | —                                                    | [from A-003 reasoning — user described feature as a stateless CSS color change] |
 
-### Cross-Cutting Technical Rules
+*(Do NOT leave the table empty; do NOT skip the table; do NOT invent invariants. The sentinel row is the explicit-acknowledgement signal — PROBE-01 R3.5 reviewer can cite it back at the user if the transcript actually does suggest a placement rule.)*
 
-Non-placement rules that apply across the whole feature (error patterns, logging, versioning, etc.). Same quote+cite format.
+---
 
-- **GI-NNN** [from A-NNN]: "..."
+## State Transitions
+
+> **State-machine rules the user described during the interview.** Every row cites a Locked-only `[from A-NNN]` transcript answer whose body contained the transition language. Foundry decompose propagates this section verbatim into every casting's `<state_transitions>` block; downstream Phase 7 TEST-01 derives negative-assertion targets from the `guard` column.
+
+Each row in this table is a state transition the user described ("when X happens, Y becomes Z" / "after step N, transition to step M"). `from-state` and `to-state` are state-name strings; `trigger` is the event/method/input that fires the transition; `guard` is the precondition that must hold for the transition to fire (TEST-01 will use guards as negative-assertion targets). Empty `from-state` indicates the initial state; empty `to-state` indicates a terminal state.
+
+| ID     | from-state | to-state  | trigger                       | guard                  | citation     |
+|--------|------------|-----------|-------------------------------|------------------------|--------------|
+| ST-001 | RUNNING    | COMPLETED | casting reaches DONE          | ASSAY signs off        | [from A-NNN] |
+| ST-002 |            | RUNNING   | F0.5 emits casting prompt     | F0.9 VALIDATE passes   | [from A-NNN] |
+
+**Sentinel example** (use this exact shape if the transcript has no state-machine language — exactly one row, replacing `A-005` with the framing answer that justified the conclusion):
+
+| —      | —          | —         | None — this feature has no state transitions | —      | [from A-005 reasoning — user described feature as a stateless CSS color change] |
+
+*(Sentinel row is REQUIRED if there are no transitions — the heading without a table or with an empty table is rejected by validate-spec.py at SPEC FORGED. Do NOT generate plausible-sounding transitions from spec prose; the validator's content-difference rule (Jaccard ≥0.7) will reject paraphrased rows with `TYPED_ROW_PARAPHRASE`.)*
+
+---
+
+## Contracts
+
+> **Observable contracts the user described during the interview.** Every row cites a Locked-only `[from A-NNN]` transcript answer whose body defined the surface. Foundry decompose propagates this section verbatim into every casting's `<contracts>` block; downstream Phase 7 TEST-01 derives `hypothesis-jsonschema` strategies from the `input`/`output` cells, and the `errors` column gives TEST-01 the negative-assertion mandate surface.
+
+Each row in this table is an observable contract the user described — endpoint, function, handler, CLI command, or other observable surface. `input` and `output` describe types or shapes (e.g., `User → {token: string, expires_at: ISO8601}`); `errors` lists error codes / conditions / HTTP statuses.
+
+Note: this is the **user-stated observable contract layer**. The implementation-stated technical design (data models, internal helpers, error envelope) lives one level lower in `## Technical Design`. The two layers may overlap in subject matter; the `## Contracts` table is what the user described, the `## Technical Design` block is what the implementation will build.
+
+| ID     | surface                  | input                             | output                                            | errors                                       | citation     |
+|--------|--------------------------|-----------------------------------|---------------------------------------------------|----------------------------------------------|--------------|
+| CT-001 | POST /api/login          | {email: string, password: string} | {token: string, expires_at: ISO8601}              | 401 invalid_credentials, 429 rate_limited    | [from A-NNN] |
+| CT-002 | Foundry-Accept-Casting   | casting_id (string)               | {accepted: bool, provenance: {sha256, mtime}}     | INVALID_CASTING_ID, EVIDENCE_MISMATCH        | [from A-NNN] |
+
+**Sentinel example** (use this exact shape if the transcript has no observable contracts — exactly one row, replacing `A-012` with the framing answer that justified the conclusion):
+
+| —      | None — no observable contracts beyond internal helper signatures | —                                 | —                                                 | —                                            | [from A-012 reasoning — user said this is a build-script edit] |
+
+*(Sentinel row is REQUIRED if there are no contracts. Same hallucination ban as `## State Transitions` — the validator will reject paraphrased rows with `TYPED_ROW_PARAPHRASE`.)*
 
 ---
 
@@ -1250,6 +1286,14 @@ These rules are non-negotiable. If any of them fails, the spec cannot be finaliz
 
 18. **The full `transcript.md` body MUST be embedded in the final spec as `## Appendix: Interview Transcript`**, pasted verbatim at finalization time. This makes the spec self-contained — downstream readers (foundry teammates, PROVE, TRACE, human reviewers) resolve every citation without opening another file. The appendix is not a summary; it is a byte-for-byte paste of the transcript file. If transcript.md is 10,000 lines, the appendix is 10,000 lines.
 
+19. **Synthesize the `## State Transitions` table from transcript at R3.** Walk the transcript for state-machine language ("when X happens, Y becomes Z"; "after step N, transition to step M"; "transitions from STATE_A to STATE_B"). One row per identified transition; ID format `ST-NNN`; `from-state` / `to-state` are state-name strings; `trigger` is the event/method/input that fires the transition; `guard` is the precondition; `citation` is `[from A-NNN]` (the A-NNN whose body contains the transition language). If no transcript-grounded transitions exist, write the documented sentinel row. Do NOT generate plausible-sounding transitions from spec prose; the validator's content-difference rule (Jaccard ≥0.7) will reject paraphrased rows with `TYPED_ROW_PARAPHRASE`. Phase 6 PROBE-01, Phase 7 TEST-01, and Phase 8 INTENT-01 grep this table as their citation surface — REQUIRED.
+
+20. **Synthesize the `## Contracts` table from transcript at R3.** Walk the transcript for surface-defining language (function names, endpoints, handlers, CLI commands, observable signatures). One row per identified surface; ID format `CT-NNN`; `surface` is the endpoint/function/handler name; `input` / `output` describe shapes or types; `errors` lists error codes / conditions / HTTP statuses; `citation` is `[from A-NNN]`. If no transcript-grounded contracts exist, write the documented sentinel row. Same hallucination ban as rule 19 — the user-stated observable contract layer is distinct from the implementation-stated `## Technical Design` block; do NOT collapse one into the other. REQUIRED.
+
+21. **Citation form is Locked-only in typed-section rows.** Every row in `## Global Invariants`, `## State Transitions`, and `## Contracts` MUST cite `[from A-NNN]` where A-NNN is a Locked transcript answer (not survey, not R1.5 research, not A-AUTO-NNN). NO `[derived from A-NNN]` in typed rows. Survey-derived facts go in `## Technical Design` prose, never in typed tables. Sentinel rows are the one exception — their citation may be `[from A-NNN reasoning]` or `[from survey reasoning]` because they document the absence of the row, not the row itself. The validator enforces this via `TYPED_ROW_BAD_CITATION`.
+
+22. **The `## Global Invariants` section is now a 5-column table.** GI-NNN row IDs are preserved from prior versions (a v4.2.0 spec's `**GI-001** [from A-NNN]: "..."` bullet graduates to a `| GI-001 | ... | [from A-NNN] |` row — same identity). The `### Architectural Placement` and `### Cross-Cutting Technical Rules` subheadings are dropped; the `applies-to` column carries that information at row granularity. The "None — the user gave no explicit placement constraints" sentinel graduates from a bullet/paragraph to a sentinel ROW (rule 13's "write 'None — ...' explicitly" still applies, just in row form). Phase 3 (TYPE-02) future work adds `spec_format_version` frontmatter for versioned enforcement; severity-agnostic prose ("validator enforces", "REQUIRED") locks here so Phase 3's warn->fail upgrade is a single-line edit at validate-spec.py, not a re-author of setup-forge.sh.
+
 SPEC_PROMPT_EOF
 
 # =========================================================================
@@ -1303,15 +1347,19 @@ For key function/type references:
 
 - Transcript has ≥3 A-NNN answers (interview depth sanity)
 - Spec has `## Global Invariants` section
+- Spec has `## State Transitions` section (Phase 2 / TYPE-01 typed table — REQUIRED, validator enforces)
+- Spec has `## Contracts` section (Phase 2 / TYPE-01 typed table — REQUIRED, validator enforces)
 - Spec has `## Appendix: Interview Transcript` section embedding the full transcript
 - Every Locked FR/NFR/AC/GI (under `### Locked` subsections or inside Global Invariants) has: a double-quoted substring, a `[from A-NNN]` citation, the citation resolves, the quote is byte-identical to the cited answer
 - Every line that has BOTH a quote AND a `[from A-NNN]` marker (anywhere in the spec) passes the verbatim check — catches AC bullets nested inside User Stories
-- Every bullet and non-header table row in these sections has a citation or requirement-ID marker: Problem Statement, Scope, User Stories, Functional Requirements, Non-Functional Requirements, Global Invariants, Technical Design, File Change Map, Observable Truths, Codebase References (Implementation Phases is exempt — it traces via `implements [FR-NNN]`)
+- Every bullet and non-header table row in these sections has a citation or requirement-ID marker: Problem Statement, Scope, User Stories, Functional Requirements, Non-Functional Requirements, Global Invariants, State Transitions — every row, Contracts — every row, Technical Design, File Change Map, Observable Truths, Codebase References (Implementation Phases is exempt — it traces via `implements [FR-NNN]`)
 - Every A-NNN reference in the spec body resolves to a real answer in the transcript
 - No `[from Q-NNN]` (citations point at answers, not questions)
 - If the transcript has `[ARCH_INVARIANT]`-tagged answers, the Global Invariants section has ≥1 GI-NNN entry
 - No Locked/Flexible FR or NFR cites only a survey file with no user answer backing (survey-only = codebase-inferred = hallucination)
 - Every A-NNN in the transcript is cited at least once in the spec body (coverage — no interview content silently dropped)
+- Typed-section rows (`## Global Invariants`, `## State Transitions`, `## Contracts`) cite Locked-only `[from A-NNN]` (no `[derived from A-NNN]`, no survey citations, no `A-AUTO-NNN` references in typed rows — sentinel rows excepted; validator enforces via `TYPED_ROW_BAD_CITATION`)
+- Typed-section rows are content-different from adjacent prose (Jaccard ≥0.7 fails as `TYPED_ROW_PARAPHRASE` — validator enforces)
 
 **Legacy self-check (still run, but non-authoritative):**
 
@@ -1340,7 +1388,9 @@ Before calling the script, you may run through the manual checks below as a sani
    - `## User Stories` — every US header line, every AC bullet, every Codebase Integration bullet
    - `## Functional Requirements` — every FR bullet (Locked, Flexible, Informational)
    - `## Non-Functional Requirements` — every NFR bullet
-   - `## Global Invariants` — every GI bullet (OR the literal "None — ..." sentinel)
+   - `## Global Invariants` — every row (Locked-only `[from A-NNN]` citation in the citation cell; OR a sentinel row in the documented form)
+   - `## State Transitions` — every row (Locked-only `[from A-NNN]` citation; OR a sentinel row in the documented form — REQUIRED, validator enforces)
+   - `## Contracts` — every row (Locked-only `[from A-NNN]` citation; OR a sentinel row in the documented form — REQUIRED, validator enforces)
    - `## Technical Design` — every bullet under Data Model Changes, API Design, Architecture, Error Handling; every table row in New endpoints / Modified endpoints / Error cases
    - `## File Change Map` — every table row
    - `## Observable Truths` — every OT bullet
@@ -1356,7 +1406,8 @@ Before calling the script, you may run through the manual checks below as a sani
    - Horizontal rules (`---`)
    - Blank lines
    - Phase verification commands (`- **Verification:** ...`) and phase dependency lines (`- **Depends on:** ...`) — these are scaffolding, not claims about user intent
-   - The literal sentinel "None — the user gave no explicit placement constraints." in Global Invariants
+   - The literal sentinel "None — the user gave no explicit placement constraints." in Global Invariants (or its sentinel-row form `| — | None — the user gave no explicit placement constraints. | — | — | [from A-NNN reasoning] |`)
+   - Sentinel rows in `## State Transitions` (`| — | — | — | None — this feature has no state transitions | — | [from A-NNN reasoning] |`) and `## Contracts` (`| — | None — no observable contracts beyond internal helper signatures | — | — | — | [from A-NNN reasoning] |`) — these document the absence of typed rows, not the rows themselves
 
 4. **CITATION RESOLUTION CHECK — every A-NNN marker anywhere in the spec body MUST resolve to a real transcript answer.**
 
@@ -1370,10 +1421,14 @@ Before calling the script, you may run through the manual checks below as a sani
 
 6. **For every Informational item:** Check it has a `[from A-NNN]` or `[from reality.md …]` citation. If missing → FAIL: "Informational item has no source citation."
 
-7. **Global Invariants section existence:**
+7. **Typed-section existence (Global Invariants / State Transitions / Contracts):**
    - Section header `## Global Invariants` MUST exist in the spec. If missing → FAIL: "Global Invariants section missing — foundry decompose will have nothing to propagate to castings, and architectural-placement violations will slip through."
-   - Section content MUST be either (a) one or more GI-NNN entries with quotes + citations, OR (b) the literal sentence "None — the user gave no explicit placement constraints." If the section is empty, contains placeholder text, or contains invented (uncited) invariants → FAIL.
-   - If the transcript contains any answer tagged `[ARCH_INVARIANT]`, the Global Invariants section MUST contain at least one GI-NNN entry citing that answer. Empty invariants when the transcript has tagged answers → FAIL: "Transcript has ARCH_INVARIANT-tagged answers but Global Invariants section is empty. Extract them."
+   - Section content MUST be either (a) one or more GI-NNN rows with verbatim quotes + Locked-only `[from A-NNN]` citations, OR (b) a sentinel row in the documented form (`| — | None — the user gave no explicit placement constraints. | — | — | [from A-NNN reasoning] |`). If the section is empty, contains placeholder text, or contains invented (uncited) invariants → FAIL.
+   - If the transcript contains any answer tagged `[ARCH_INVARIANT]`, the Global Invariants section MUST contain at least one GI-NNN row citing that answer. Empty invariants when the transcript has tagged answers → FAIL: "Transcript has ARCH_INVARIANT-tagged answers but Global Invariants section is empty. Extract them."
+   - Section header `## State Transitions` MUST exist in the spec. If missing → FAIL: "## State Transitions section missing — Phase 6 PROBE-01, Phase 7 TEST-01, Phase 8 INTENT-01 require typed sections as their citation surface; missing this section is a TYPE-01 violation."
+   - Section content MUST be either (a) one or more ST-NNN rows in the documented 6-column form (`| ID | from-state | to-state | trigger | guard | citation |`) with Locked-only `[from A-NNN]` citations, OR (b) a sentinel row in the documented form (`| — | — | — | None — this feature has no state transitions | — | [from A-NNN reasoning] |`). The heading without a table or with an empty table → FAIL.
+   - Section header `## Contracts` MUST exist in the spec. If missing → FAIL: "## Contracts section missing — Phase 6 PROBE-01, Phase 7 TEST-01, Phase 8 INTENT-01 require typed sections as their citation surface; missing this section is a TYPE-01 violation."
+   - Section content MUST be either (a) one or more CT-NNN rows in the documented 6-column form (`| ID | surface | input | output | errors | citation |`) with Locked-only `[from A-NNN]` citations, OR (b) a sentinel row in the documented form (`| — | None — no observable contracts beyond internal helper signatures | — | — | — | [from A-NNN reasoning] |`). The heading without a table or with an empty table → FAIL.
 
 8. **Transcript sanity:**
    - `transcript.md` MUST exist and MUST contain at least 3 A-NNN blocks. If fewer → FAIL: "Interview too shallow to produce a properly-cited spec. Return to R2 and ask more questions."
