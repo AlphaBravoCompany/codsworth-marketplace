@@ -710,9 +710,13 @@ def run_setup_forge(tmp_path: Path) -> Callable[..., SetupForgeResult]:
 # Regex used to extract a leading `<!-- spec_format_version: vX.Y -->`
 # comment from a transcript fixture. The conftest synthesizer uses this
 # when the test does NOT pass an explicit `spec_format_version=` kwarg —
-# the fixture-comment is the per-fixture default.
+# the fixture-comment is the per-fixture default. The version capture is
+# anchored to the `vN.N` shape so documentation-prose comments containing
+# a placeholder ellipsis (e.g. `<!-- spec_format_version: ... -->` in
+# the legacy fixture's narrative) do NOT match — only real version
+# literals are extracted.
 _FIXTURE_VERSION_COMMENT_RE = re.compile(
-    r"<!--\s*spec_format_version:\s*(\S+)\s*-->"
+    r"<!--\s*spec_format_version:\s*(v\d+\.\d+)\s*-->"
 )
 
 # Regex to strip [IMPLICIT_FACT:*] tags from synthesized transcripts when

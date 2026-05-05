@@ -141,6 +141,38 @@ A_AUTO_BLOCK_RE = re.compile(
 #      paraphrase-from-prose fabrication).
 TYPED_SECTION_HEADINGS = ("Global Invariants", "State Transitions", "Contracts")
 
+# Phase 3 / TYPE-02: spec_format_version frontmatter constants.
+# Strict allowlist (closed-vocabulary discipline parallel to Phase 1's
+# VALID_IMPLICIT_FACT_CATEGORIES and Phase 2's TYPED_SECTION_HEADINGS).
+# Bumping a version requires (a) editing this allowlist, (b) editing
+# setup-forge.sh's SPEC TEMPLATE literal, (c) re-running the
+# cross-script alignment test in test_versioned_alignment.py.
+KNOWN_SPEC_FORMAT_VERSIONS: tuple[str, ...] = ("v2.0", "v2.1")
+IMPLICIT_DEFAULT_SPEC_FORMAT_VERSION = "v2.0"
+LATEST_SPEC_FORMAT_VERSION = "v2.1"
+
+_VERSION_TUPLE_RE = re.compile(r"^v(\d+)\.(\d+)$")
+FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_FRONTMATTER_SPEC_VERSION_RE = re.compile(
+    r"^\s*spec_format_version\s*:\s*"
+    r"(?:\"([^\"\n]+)\"|'([^'\n]+)'|(\S+))"
+    r"\s*(?:#.*)?\s*$",
+    re.MULTILINE,
+)
+
+
+def _parse_version_tuple(literal: str) -> tuple[int, int]:
+    """Parse 'v2.1' to (2, 1). Raises ValueError on shape mismatch."""
+    m = _VERSION_TUPLE_RE.match(literal.strip())
+    if not m:
+        raise ValueError(f"Malformed spec_format_version literal: {literal!r}")
+    return (int(m.group(1)), int(m.group(2)))
+
+
+_KNOWN_VERSION_TUPLES: dict[str, tuple[int, int]] = {
+    v: _parse_version_tuple(v) for v in KNOWN_SPEC_FORMAT_VERSIONS
+}
+
 INVARIANTS_TABLE_COLUMNS = (
     "ID",
     "statement",
@@ -390,6 +422,20 @@ def normalize_for_compare(text: str) -> str:
     return out.strip()
 
 
+def _translate_unicode_chars(text: str) -> str:
+    """Apply the _UNICODE_NORMALIZE table without whitespace collapse.
+
+    Unlike normalize_for_compare (which collapses whitespace runs to a
+    single space), this helper preserves line structure — required for
+    YAML frontmatter parsing where newlines are load-bearing
+    (RESEARCH.md Pitfall 1).
+    """
+    out = text
+    for src, dst in _UNICODE_NORMALIZE.items():
+        out = out.replace(src, dst)
+    return out
+
+
 def split_spec_body_appendix(text: str) -> tuple[str, str | None]:
     """Return (body, appendix) — appendix is None if no appendix section."""
     match = APPENDIX_HEADING_RE.search(text)
@@ -418,6 +464,31 @@ def extract_section(text: str, heading_name: str) -> str | None:
         if name.lower().startswith(target):
             return text[start:end]
     return None
+
+
+def extract_frontmatter(text: str) -> dict[str, str]:
+    """Extract YAML-style frontmatter block from top of text.
+
+    Returns {} if absent. Tolerates UTF-8 BOM (RESEARCH.md Pitfall 2),
+    smart quotes / NBSP / em-dash via _translate_unicode_chars
+    (RESEARCH.md Pitfall 1), trailing whitespace on `---` delimiters,
+    single/double quoted scalars, trailing `# comment` after value.
+
+    Phase 3 reads exactly one key (spec_format_version). Permissive on
+    unknown keys — forge may add other frontmatter fields in future.
+    """
+    if text.startswith("﻿"):
+        text = text[1:]
+    m = FRONTMATTER_RE.match(text)
+    if not m:
+        return {}
+    block_body = _translate_unicode_chars(m.group(1))
+    out: dict[str, str] = {}
+    kv = _FRONTMATTER_SPEC_VERSION_RE.search(block_body)
+    if kv:
+        value = kv.group(1) or kv.group(2) or kv.group(3)
+        out["spec_format_version"] = value.strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -972,10 +1043,49 @@ def check_coverage(
         )
 
 
+def check_spec_format_version(body: str, report: Report) -> tuple[int, int]:
+    """Parse spec_format_version from body's frontmatter (Phase 3 / TYPE-02).
+
+    Returns the parsed (major, minor) tuple, defaulting to
+    IMPLICIT_DEFAULT_SPEC_FORMAT_VERSION's tuple when frontmatter
+    is absent or the field is not declared. Hard-fails via report
+    with SPEC_FORMAT_VERSION_UNKNOWN if the declared version is
+    outside KNOWN_SPEC_FORMAT_VERSIONS.
+
+    Plan 03-02 lands the parser, default behavior, and the
+    SPEC_FORMAT_VERSION_UNKNOWN allowlist hard-fail emission.
+    Plan 03-03 wires the warn→fail predicate at the IMPLICIT_FACT_SKIPPED
+    and TYPE_TABLES_MISSING sites using the version tuple this function
+    returns.
+    """
+    fm = extract_frontmatter(body)
+    declared = fm.get("spec_format_version")
+    if declared is None:
+        return _KNOWN_VERSION_TUPLES[IMPLICIT_DEFAULT_SPEC_FORMAT_VERSION]
+    if declared not in _KNOWN_VERSION_TUPLES:
+        report.fail(
+            f"SPEC_FORMAT_VERSION_UNKNOWN: spec declared "
+            f"spec_format_version={declared!r} which is not in the "
+            f"known allowlist {sorted(KNOWN_SPEC_FORMAT_VERSIONS)}. "
+            f"Phase 3 / TYPE-02 enforces a strict allowlist; bumping "
+            f"a version requires editing KNOWN_SPEC_FORMAT_VERSIONS "
+            f"in validate-spec.py AND the SPEC TEMPLATE literal in "
+            f"setup-forge.sh together (cross-script alignment is "
+            f"covered by test_versioned_alignment.py)."
+        )
+        # Return implicit default so downstream checks still run with
+        # warn-level semantics (defensive — main() still returns
+        # non-zero because report.fail was called).
+        return _KNOWN_VERSION_TUPLES[IMPLICIT_DEFAULT_SPEC_FORMAT_VERSION]
+    return _KNOWN_VERSION_TUPLES[declared]
+
+
 def check_implicit_facts(
     transcript_text: str,
     transcript_answers: dict[str, Answer],
     report: Report,
+    *,
+    spec_version_tuple: tuple[int, int] = (2, 0),  # Plan 03-02 added; Plan 03-03 uses
 ) -> None:
     """IMPLICIT_FACT tag validation (Phase 1 / INTV-01).
 
@@ -1075,6 +1185,8 @@ def check_typed_sections(
     body: str,
     transcript_answers: dict[str, Answer],
     report: Report,
+    *,
+    spec_version_tuple: tuple[int, int] = (2, 0),  # Plan 03-02 added; Plan 03-03 uses
 ) -> None:
     """Typed-section validation (Phase 2 / TYPE-01).
 
@@ -1383,8 +1495,26 @@ def main(argv: list[str]) -> int:
     check_arch_invariants_populated(body, transcript_answers, report)
     check_survey_only_requirements(body, report)
     check_coverage(body, transcript_answers, report)
-    check_implicit_facts(transcript_text, transcript_answers, report)  # Phase 1 / INTV-01
-    check_typed_sections(body, transcript_answers, report)  # Phase 2 / TYPE-01
+    # Phase 3 / TYPE-02: parse spec_format_version BEFORE any other
+    # check that depends on it. The parsed tuple threads into
+    # check_implicit_facts and check_typed_sections so their warn sites
+    # (IMPLICIT_FACT_SKIPPED, TYPE_TABLES_MISSING) can promote to fail
+    # when version >= v2.1 (Plan 03-03). SPEC_FORMAT_VERSION_UNKNOWN is
+    # emitted directly inside check_spec_format_version on allowlist miss.
+    spec_version_tuple = check_spec_format_version(body, report)
+
+    check_implicit_facts(
+        transcript_text,
+        transcript_answers,
+        report,
+        spec_version_tuple=spec_version_tuple,  # Phase 3 / TYPE-02
+    )  # Phase 1 / INTV-01
+    check_typed_sections(
+        body,
+        transcript_answers,
+        report,
+        spec_version_tuple=spec_version_tuple,  # Phase 3 / TYPE-02
+    )  # Phase 2 / TYPE-01
 
     # Dedupe failures (opportunistic + locked checks can fire on the same line)
     seen: set[str] = set()
