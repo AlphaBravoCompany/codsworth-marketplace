@@ -40,6 +40,9 @@ This is the Wave 0 baseline.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 
 # -----------------------------------------------------------------------------
 # Plan 03-02 ownership: parser + template tests
@@ -437,4 +440,114 @@ def test_f09_subcheck_7k_catches_unexpected(
         "Plan 03-04 F0.9 sub-check 7k must surface STREAM_SKIP_UNEXPECTED "
         "when a stream_skips record is emitted for an agent whose min ≤ "
         f"spec version; got f09_diagnostics:\n{f09_diagnostics}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Plan 03-04 anti-drift guards (RESEARCH.md Pitfall 3 + Pitfall 7)
+#
+# These two tests defend the cross-prose alignment between F0.5 V2 step 2b
+# and F0.9 sub-check 7k in plugins/foundry/commands/start.md, plus the
+# casting-prompt-cleanliness contract for the F0.5 stdout summary line.
+# -----------------------------------------------------------------------------
+
+
+def test_f05_step_2b_and_f09_7k_reference_same_roster():
+    """RESEARCH.md Pitfall 7 — F0.5 step 2b and F0.9 sub-check 7k reference
+    the same hardcoded agent roster.
+
+    If the two prose blocks drift (one lists ``tracer.md``, the other
+    forgets to add it when Phases 6/7/8 update the roster), 7k either
+    false-positives or false-negatives in lock-step with F0.5's emission
+    bug. The roster appears in two places by design (defense-in-depth via
+    re-derivation); this regression test makes the alignment grep-checkable
+    on every CI run.
+
+    Acceptance: either both blocks list the same agent-path set, OR
+    sub-check 7k uses the explicit by-reference phrase ``same hardcoded
+    list as F0.5 step 2b`` (re-derivation by reference is acceptable —
+    the roster is still single-sourced inside F0.5 step 2b).
+    """
+    start_md_path = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "plugins" / "foundry" / "commands" / "start.md"
+    )
+    text = start_md_path.read_text(encoding="utf-8")
+
+    # Find the F0.5 V2 step 2b block. Anchored on the "2b. " literal at
+    # column 0; consumes lines until the next "2c. " sibling header (or
+    # the F0.5 V3 / F0.9 boundary).
+    f05_match = re.search(
+        r"^2b\.\s.*?(?=^2c\.\s|^### |\Z)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert f05_match, (
+        "F0.5 V2 step 2b block not found in start.md — Plan 03-04's prose "
+        "must define a `2b.` sibling step inside F0.5 V2 procedure."
+    )
+    f05_block = f05_match.group(0)
+
+    # Find the F0.9 sub-check 7k block. Anchored on the "**7k." literal;
+    # consumes lines until the next dimension-7 sibling letter (none after
+    # 7k currently) or the dimension 8 boundary.
+    f09_match = re.search(
+        r"\*\*7k\..*?(?=\n\s*-\s*\*\*7[a-z]\.|\n\d+\.\s+\*\*[A-Z]|\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert f09_match, (
+        "F0.9 sub-check 7k block not found in start.md — Plan 03-04's "
+        "prose must define a `7k.` sibling sub-check inside F0.9 "
+        "dimension 7."
+    )
+    f09_block = f09_match.group(0)
+
+    # Acceptance branch 1: by-reference phrase ("same hardcoded ... as
+    # F0.5 step 2b"). Re-derivation by reference is acceptable because
+    # the roster is still single-sourced inside F0.5 step 2b.
+    by_reference_re = re.compile(
+        r"same hardcoded (?:list|roster|path list) as F0\.5 step 2b",
+        re.IGNORECASE,
+    )
+    if by_reference_re.search(f09_block):
+        return  # Acceptable — re-derivation by reference.
+
+    # Acceptance branch 2: explicit path enumeration must match.
+    agent_path_re = re.compile(r"plugins/(?:forge|foundry)/agents/\S+\.md")
+    f05_paths = set(agent_path_re.findall(f05_block))
+    f09_paths = set(agent_path_re.findall(f09_block))
+    assert f05_paths == f09_paths, (
+        "Drift detected between F0.5 step 2b roster and F0.9 sub-check 7k "
+        "roster. RESEARCH.md Pitfall 7 — these must list the same agent "
+        "paths OR sub-check 7k must use the by-reference phrase "
+        "'same hardcoded list as F0.5 step 2b'.\n"
+        f"F0.5 step 2b paths: {sorted(f05_paths)}\n"
+        f"F0.9 sub-check 7k paths: {sorted(f09_paths)}"
+    )
+
+
+def test_f05_stdout_summary_not_in_casting_prompt(
+    run_typed_validator_subprocess,
+):
+    """RESEARCH.md Pitfall 3 — the F0.5 stdout summary substring
+    ``F0.5 stream-skipped:`` MUST NOT appear inside any casting prompt.
+
+    Casting prompts must be byte-for-byte stable across runs for wave-
+    level prompt-cache locality. The F0.5 step 2c summary line is a
+    HUMAN/CI signal emitted at F0.5 entry BEFORE any casting prompt is
+    written; if a background agent ever echoed the summary into a casting
+    prompt, the cache-hit ratio for that wave would collapse.
+
+    Phase 3 ships the substring contract; later phases enforce on real
+    casting-prompt outputs. Phase 3's surface is the validator subprocess
+    stdout, which is the structurally-similar stream the prompt-template
+    propagation tests (Phase 2) already exercise.
+    """
+    result = run_typed_validator_subprocess("transcript_typed_complete")
+    combined = result.stdout + result.stderr
+    assert "F0.5 stream-skipped:" not in combined, (
+        "RESEARCH.md Pitfall 3: 'F0.5 stream-skipped:' substring leaked "
+        "into validator output — must not appear in any casting-prompt-"
+        f"shaped output. Got:\n{combined}"
     )
