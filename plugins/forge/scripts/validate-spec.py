@@ -1168,7 +1168,13 @@ def check_implicit_facts(
             for ans in transcript_answers.values()
         )
         if not any_tagged:
-            report.warn(
+            # Phase 3 / TYPE-02: severity is gated on spec_format_version.
+            # Specs declaring v2.1+ hard-fail; v2.0 / missing-frontmatter
+            # specs still warn-only (backwards-compat for legacy v4.2.0
+            # specs in dependent projects). The message text is identical
+            # between branches so the Phase 3 coordination tokens
+            # (spec_format_version, Phase 3, TYPE-02) remain grep-stable.
+            _msg = (
                 "IMPLICIT_FACT_SKIPPED: transcript has answers but no "
                 "[IMPLICIT_FACT:CATEGORY]-tagged entries. The R1.75 "
                 "implicit-fact extraction sub-step did not run or did not "
@@ -1179,6 +1185,10 @@ def check_implicit_facts(
                 "this to a hard FAILURE for specs declaring "
                 "spec_format_version >= v2.1."
             )
+            if spec_version_tuple >= (2, 1):
+                report.fail(_msg)
+            else:
+                report.warn(_msg)
 
 
 def check_typed_sections(

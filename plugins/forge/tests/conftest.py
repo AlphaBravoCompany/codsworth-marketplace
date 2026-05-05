@@ -719,12 +719,39 @@ _FIXTURE_VERSION_COMMENT_RE = re.compile(
     r"<!--\s*spec_format_version:\s*(v\d+\.\d+)\s*-->"
 )
 
-# Regex to strip [IMPLICIT_FACT:*] tags from synthesized transcripts when
-# `with_implicit_fact_tags=False`. Matches the same shape as
-# _IMPLICIT_FACT_TAG_BRACKETED_RE above but as a stripper, not a finder.
-_IMPLICIT_FACT_STRIP_RE = re.compile(
-    r"\[IMPLICIT_FACT:[A-Z_]+\]\s*"
+# Regexes to strip [IMPLICIT_FACT:*] tags from synthesized transcripts when
+# `with_implicit_fact_tags=False`. Three patterns to handle the three positional
+# cases of an IMPLICIT_FACT:CATEGORY token inside an A-NNN tag bracket:
+#   1. Leading/middle position with trailing comma:
+#        `[IMPLICIT_FACT:DEPLOYMENT, LOCKED]`     -> `[LOCKED]`
+#        `[LOCKED, IMPLICIT_FACT:RUNTIME, OTHER]` -> `[LOCKED, OTHER]`
+#   2. Trailing position with preceding comma:
+#        `[ARCH_INVARIANT, IMPLICIT_FACT:DEPLOYMENT]` -> `[ARCH_INVARIANT]`
+#   3. Sole tag (no comma siblings) — entire bracket pair removed (with the
+#      space before it) so the header doesn't keep an empty `[]`:
+#        `## A-002 [IMPLICIT_FACT:DEPLOYMENT]` -> `## A-002`
+# Plan 03-01's original single-pattern shape (`\[IMPLICIT_FACT:CAT\]`) only
+# handled case 3 and missed combined-tag fixtures (e.g. v21_missing_implicit
+# transcript fixture which uses `[ARCH_INVARIANT, IMPLICIT_FACT:DEPLOYMENT]`).
+# Plan 03-03 generalises the stripper across all three positions. Horizontal
+# whitespace classes ([ \t]) preserve newlines so the line structure is intact.
+_IMPLICIT_FACT_STRIP_LEADING_RE = re.compile(
+    r"\bIMPLICIT_FACT:[A-Z_]+[ \t]*,[ \t]*"
 )
+_IMPLICIT_FACT_STRIP_TRAILING_RE = re.compile(
+    r"[ \t]*,[ \t]*IMPLICIT_FACT:[A-Z_]+"
+)
+_IMPLICIT_FACT_STRIP_SOLE_RE = re.compile(
+    r"[ \t]*\[IMPLICIT_FACT:[A-Z_]+\]"
+)
+
+
+def _strip_implicit_fact_tags(text: str) -> str:
+    """Strip every [IMPLICIT_FACT:*] token from A-NNN tag brackets."""
+    text = _IMPLICIT_FACT_STRIP_LEADING_RE.sub("", text)
+    text = _IMPLICIT_FACT_STRIP_TRAILING_RE.sub("", text)
+    text = _IMPLICIT_FACT_STRIP_SOLE_RE.sub("", text)
+    return text
 
 
 @pytest.fixture
@@ -837,8 +864,8 @@ def run_versioned_validator_subprocess(
         # transcript. Used by Plan 03-01 RED stub
         # test_v21_missing_implicit_hard_fails.
         if not with_implicit_fact_tags:
-            transcript_for_spec = _IMPLICIT_FACT_STRIP_RE.sub(
-                "", transcript_for_spec
+            transcript_for_spec = _strip_implicit_fact_tags(
+                transcript_for_spec
             )
 
         synthesized = _build_synthesized_spec(
