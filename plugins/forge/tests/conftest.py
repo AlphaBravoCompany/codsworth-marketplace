@@ -685,3 +685,260 @@ def run_setup_forge(tmp_path: Path) -> Callable[..., SetupForgeResult]:
         )
 
     return _runner
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 fixtures (Plan 03-01)
+# ---------------------------------------------------------------------------
+#
+# Two new fixtures land here, append-only — none of the Phase 1/2 fixtures
+# above are edited:
+#
+#   1. ``run_versioned_validator_subprocess`` — wraps validate-spec.py with
+#      explicit ``spec_format_version`` frontmatter handling. Synthesizes a
+#      spec body with the requested frontmatter (or no frontmatter for the
+#      implicit-v2.0 path) and forwards Phase 2 builder kwargs via
+#      ``**kwargs`` so existing typed-table negative tests can be reused
+#      under Phase 3 conditions.
+#
+#   2. ``run_f05_decompose_with_test_roster`` — STUB ONLY in Plan 03-01.
+#      Raises ``pytest.skip(...)`` so the seven Phase 3 RED stubs that
+#      consume this fixture are collected but skipped. Plan 03-04 lands the
+#      real F0.5 roster-enumeration logic and turns those skips into
+#      RED-then-GREEN.
+
+# Regex used to extract a leading `<!-- spec_format_version: vX.Y -->`
+# comment from a transcript fixture. The conftest synthesizer uses this
+# when the test does NOT pass an explicit `spec_format_version=` kwarg —
+# the fixture-comment is the per-fixture default.
+_FIXTURE_VERSION_COMMENT_RE = re.compile(
+    r"<!--\s*spec_format_version:\s*(\S+)\s*-->"
+)
+
+# Regex to strip [IMPLICIT_FACT:*] tags from synthesized transcripts when
+# `with_implicit_fact_tags=False`. Matches the same shape as
+# _IMPLICIT_FACT_TAG_BRACKETED_RE above but as a stripper, not a finder.
+_IMPLICIT_FACT_STRIP_RE = re.compile(
+    r"\[IMPLICIT_FACT:[A-Z_]+\]\s*"
+)
+
+
+@pytest.fixture
+def run_versioned_validator_subprocess(
+    tmp_path: Path,
+) -> Callable[..., subprocess.CompletedProcess]:
+    """Plan 03-01 fixture for Phase 3 (TYPE-02) versioned-spec-format tests.
+
+    Builds a synthesized spec body via ``_build_synthesized_spec`` (Phase
+    1/2 builder) and prepends a ``spec_format_version: {value}`` frontmatter
+    block when ``spec_format_version`` is non-None. When ``spec_format_version``
+    is None (the implicit-v2.0 path), the synthesized body is written
+    verbatim — Phase 3's frontmatter parser (Plan 03-02) defaults missing
+    frontmatter to v2.0.
+
+    Note: ``_build_synthesized_spec`` already emits its OWN
+    ``spec_format_version: v2.0`` frontmatter block. To avoid double-
+    frontmatter (which would yield malformed YAML), this fixture rewrites
+    the existing frontmatter line via a regex substitution rather than
+    prepending a second YAML block.
+
+    Usage:
+        # v2.1 happy path:
+        result = run_versioned_validator_subprocess(
+            "transcript_versioned_modern",
+            spec_format_version="v2.1",
+        )
+        assert result.returncode == 0
+
+        # Unknown version (Phase 3 hard-fail):
+        result = run_versioned_validator_subprocess(
+            "transcript_versioned_unknown",
+            spec_format_version="v9.0",
+        )
+        assert result.returncode != 0
+
+        # No frontmatter (implicit v2.0):
+        result = run_versioned_validator_subprocess(
+            "transcript_versioned_legacy",
+            spec_format_version=None,  # also: omit, default is None
+        )
+        assert result.returncode == 0
+
+    Behaviour details:
+      - ``transcript_name`` may be a bare stem or include the ``.md`` suffix.
+      - When ``spec_format_version`` is None and the transcript has a
+        ``<!-- spec_format_version: vX.Y -->`` comment at top, the comment
+        value is extracted and used as the version. (The leading comment
+        line is stripped from the transcript body before synthesis so the
+        comment never appears in the synthesized appendix.)
+      - When ``spec_format_version`` is None AND no comment is present
+        (legacy fixture path), the synthesized spec is written WITHOUT any
+        spec_format_version frontmatter line — the validator's frontmatter
+        parser must default this to v2.0. The fixture explicitly removes
+        the ``_build_synthesized_spec`` builder's default v2.0 frontmatter
+        line so the implicit-default code path is exercised end-to-end.
+      - ``with_typed_tables`` and other ``**kwargs`` forward to the Phase 1/2
+        builder unchanged. Typical Phase 3 negative tests pair
+        ``spec_format_version="v2.1"`` with ``with_typed_tables=False`` to
+        exercise Plan 03-03's warn→fail upgrade.
+      - ``with_implicit_fact_tags=False`` strips ``[IMPLICIT_FACT:*]`` tags
+        from the synthesized transcript before validate-spec.py reads it,
+        mirroring the Phase 2 ``inject_paraphrase``-style negative-test
+        kwarg pattern. Used by ``test_v21_missing_implicit_hard_fails``.
+
+    Plan 03-04 ownership: this fixture stays unchanged across Plans 03-02 /
+    03-03 / 03-04. Only the validator's behaviour (validate-spec.py) shifts.
+    """
+
+    def _runner(
+        transcript_name: str,
+        *,
+        spec_format_version: str | None = None,
+        with_typed_tables: bool = True,
+        with_implicit_fact_tags: bool = True,
+        **kwargs,
+    ) -> subprocess.CompletedProcess:
+        # Resolve fixture path (accept stem or full filename).
+        fixture_basename = transcript_name
+        if not fixture_basename.endswith(".md"):
+            fixture_basename = f"{fixture_basename}.md"
+        transcript_path = FIXTURES_DIR / fixture_basename
+        if not transcript_path.is_file():
+            raise FileNotFoundError(
+                f"Phase 3 fixture missing: {transcript_path}. "
+                f"Plan 03-01 should have created it."
+            )
+
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+
+        # If caller did not pass spec_format_version, try to extract from the
+        # transcript's leading comment. None remains None when no comment
+        # exists (legacy fixture path).
+        if spec_format_version is None:
+            match = _FIXTURE_VERSION_COMMENT_RE.search(transcript_text)
+            if match:
+                spec_format_version = match.group(1)
+
+        # Strip the version comment line from the transcript before synthesis
+        # so it never appears in the synthesized appendix (the appendix is
+        # checked verbatim against the transcript by validate-spec.py, but
+        # the comment is metadata, not Q/A content). Removing it keeps the
+        # synthesized appendix structurally valid.
+        transcript_for_spec = _FIXTURE_VERSION_COMMENT_RE.sub(
+            "", transcript_text, count=1
+        ).lstrip("\n")
+
+        # Optionally strip [IMPLICIT_FACT:*] tags so Phase 1's
+        # check_implicit_facts emits IMPLICIT_FACT_SKIPPED on the resulting
+        # transcript. Used by Plan 03-01 RED stub
+        # test_v21_missing_implicit_hard_fails.
+        if not with_implicit_fact_tags:
+            transcript_for_spec = _IMPLICIT_FACT_STRIP_RE.sub(
+                "", transcript_for_spec
+            )
+
+        synthesized = _build_synthesized_spec(
+            transcript_for_spec,
+            with_typed_tables=with_typed_tables,
+            **kwargs,
+        )
+
+        # Rewrite the spec_format_version line in the builder's frontmatter
+        # to match the requested version, OR remove the entire frontmatter
+        # block when spec_format_version is None (implicit-v2.0 path).
+        if spec_format_version is None:
+            # Strip the leading YAML frontmatter block entirely so the
+            # validator's frontmatter parser sees a frontmatter-less spec
+            # and defaults to v2.0. This exercises Plan 03-02's implicit-
+            # default code path end-to-end.
+            synthesized = re.sub(
+                r"\A---\n.*?\n---\n\n",
+                "",
+                synthesized,
+                count=1,
+                flags=re.DOTALL,
+            )
+        else:
+            # Rewrite the existing spec_format_version line to the requested
+            # value. The builder always emits exactly one such line at
+            # column 0 inside the frontmatter block.
+            synthesized = re.sub(
+                r"^spec_format_version:\s*\S+",
+                f"spec_format_version: {spec_format_version}",
+                synthesized,
+                count=1,
+                flags=re.MULTILINE,
+            )
+
+        synthesized_path = tmp_path / "synthesized-versioned-spec.md"
+        synthesized_path.write_text(synthesized, encoding="utf-8")
+
+        # Also write the (possibly-tag-stripped) transcript next to the spec
+        # so validate-spec.py reads matching content. The appendix-vs-
+        # transcript verbatim check requires the file passed to
+        # validate-spec.py to match what the synthesized spec embedded.
+        transcript_for_validator_path = tmp_path / "transcript-versioned.md"
+        transcript_for_validator_path.write_text(
+            transcript_for_spec, encoding="utf-8"
+        )
+
+        return subprocess.run(
+            [
+                "python3",
+                str(VALIDATE_SPEC),
+                str(synthesized_path),
+                str(transcript_for_validator_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    return _runner
+
+
+@pytest.fixture
+def run_f05_decompose_with_test_roster(
+    tmp_path: Path,
+) -> Callable[..., dict]:
+    """Plan 03-01 fixture; Plan 03-04 implements the actual F0.5 roster logic.
+
+    SCAFFOLD ONLY in Plan 03-01: the fixture raises ``pytest.skip(...)`` if
+    invoked. This is intentional and mirrors the Phase 2 precedent
+    (``test_jaccard_tokenizer_consistency`` uses ``pytest.importorskip``):
+    the seven Phase 3 RED stubs that consume this fixture are collected
+    cleanly but SKIP at run-time, so the Plan 03-01 baseline shows the full
+    Phase 3 test surface without false-positive failures for downstream-
+    wave-owned logic.
+
+    Plan 03-04 will replace the ``pytest.skip`` body with:
+      - Build a spec at ``tmp_path/spec.md`` declaring the requested
+        ``spec_format_version`` (frontmatter only, no body required).
+      - Invoke the F0.5 roster-enumeration harness (Plan 03-04 provides a
+        thin Python harness OR a separate test helper script that performs
+        the same enumeration as ``plugins/foundry/commands/start.md`` prose).
+      - Read ``tmp_path/castings/manifest.json`` and return the parsed dict.
+
+    The fixture signature is locked NOW so Plans 03-04's RED-to-GREEN
+    transition is a fixture-body swap, not a fixture-signature change.
+
+    Usage (Plan 03-04 onward):
+        result = run_f05_decompose_with_test_roster(
+            spec_format_version="v2.0",
+            extra_agent_paths=[fixtures_dir / "agents" / "agent_phase3_test_stream.md"],
+        )
+        assert result["stream_skips"][0]["stream_id"] == "PHASE3-TEST-STREAM"
+    """
+
+    def _runner(
+        spec_format_version: str | None,
+        extra_agent_paths: list[Path] | None = None,
+    ) -> dict:
+        pytest.skip(
+            "Plan 03-04 implements F0.5 roster logic. "
+            "run_f05_decompose_with_test_roster is a Plan 03-01 scaffold "
+            "stub — the seven RED stubs that consume it collect cleanly "
+            "but skip at run-time until Plan 03-04 lands the harness."
+        )
+
+    return _runner
