@@ -385,15 +385,16 @@ def test_f09_subcheck_7k_catches_missing(
     stream_skips (the expected record is missing). Sub-check 7k must
     surface STREAM_SKIP_INCOMPLETE.
     """
-    # Plan 03-04 will extend the fixture's signature to accept an
-    # `inject_manifest_override=` kwarg for the negative-test case. For
-    # Plan 03-01 the fixture skips immediately so the kwarg shape is not
-    # binding yet; the test illustrates the eventual call pattern.
+    # Plan 03-04: harness exposes ``omit_required_record=True`` to force
+    # an empty ``manifest.stream_skips`` array even when a record SHOULD
+    # have been emitted. Sub-check 7k's re-derivation catches the omission
+    # and emits STREAM_SKIP_INCOMPLETE.
     result = run_f05_decompose_with_test_roster(
         spec_format_version="v2.0",
         extra_agent_paths=[
             fixtures_dir / "agents" / "agent_phase3_test_stream.md"
         ],
+        omit_required_record=True,
     )
 
     f09_diagnostics = result.get("f09_diagnostics", "")
@@ -419,11 +420,16 @@ def test_f09_subcheck_7k_catches_unexpected(
     spurious stream_skips record. Sub-check 7k must surface
     STREAM_SKIP_UNEXPECTED.
     """
+    # Plan 03-04: harness exposes ``inject_unexpected_record=True`` to
+    # append a record for a rostered agent whose min ≤ spec version
+    # (false positive). Sub-check 7k catches this and emits
+    # STREAM_SKIP_UNEXPECTED.
     result = run_f05_decompose_with_test_roster(
         spec_format_version="v2.1",
         extra_agent_paths=[
             fixtures_dir / "agents" / "agent_phase3_test_stream.md"
         ],
+        inject_unexpected_record=True,
     )
 
     f09_diagnostics = result.get("f09_diagnostics", "")

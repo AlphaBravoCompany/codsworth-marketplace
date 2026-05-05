@@ -928,48 +928,280 @@ def run_versioned_validator_subprocess(
     return _runner
 
 
+# ---------------------------------------------------------------------------
+# Plan 03-04: F0.5 stream-skip enumeration harness
+# ---------------------------------------------------------------------------
+#
+# The harness below mirrors the prose at
+# ``plugins/foundry/commands/start.md`` F0.5 V2 steps 2a / 2b / 2c (and the
+# F0.9 sub-check 7k re-derivation block). Drift between this Python harness
+# and the start.md prose is the single Phase 3 risk surface; it is policed by
+# ``test_f05_step_2b_and_f09_7k_reference_same_roster`` (asserting both prose
+# blocks reference the same agent-path set) and by reviewer grep for the
+# ``STREAM_SKIP_*`` token literals across both files.
+
+# Default Phase 3 ship-state roster for the F0.5 enumeration. Mirrors
+# ``start.md`` F0.5 V2 step 2b's hardcoded list — the five existing F2
+# INSPECT agent-backed streams. None declare ``min_spec_format_version`` in
+# Phase 3, so they all default to v2.0 and never appear in
+# ``manifest.stream_skips`` for any spec version. Phases 6/7/8 add their
+# agent paths to this list AND declare ``min_spec_format_version: v2.1``.
+_DEFAULT_F05_ROSTER: tuple[Path, ...] = (
+    PLUGIN_ROOT.parent / "foundry" / "agents" / "tracer.md",
+    PLUGIN_ROOT.parent / "foundry" / "agents" / "flow-tracer.md",
+    PLUGIN_ROOT.parent / "foundry" / "agents" / "assayer.md",
+    PLUGIN_ROOT.parent / "foundry" / "agents" / "research-auditor.md",
+    PLUGIN_ROOT.parent / "foundry" / "agents" / "coverage-diff.md",
+)
+
+_AGENT_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_AGENT_MIN_VER_RE = re.compile(
+    r"^\s*min_spec_format_version\s*:\s*(\S+)\s*$", re.MULTILINE
+)
+_AGENT_ID_RE = re.compile(r"^\s*id\s*:\s*(\S+)\s*$", re.MULTILINE)
+_VERSION_TUPLE_RE = re.compile(r"^v?(\d+)\.(\d+)$")
+
+# Required keys on every ``manifest.stream_skips`` record. Mirrors start.md
+# F0.5 V2 step 2b's "All five fields are REQUIRED" clause. F0.9 sub-check
+# 7k's STREAM_SKIP_MALFORMED error fires if any field is absent.
+_STREAM_SKIP_REQUIRED_KEYS = frozenset(
+    {"stream_id", "reason", "spec_version", "stream_min", "agent_path"}
+)
+
+
+def _parse_version_literal(literal: str) -> tuple[int, int]:
+    """Parse a ``vX.Y`` literal to a ``(major, minor)`` tuple.
+
+    Tolerates surrounding quotes / whitespace (matches start.md's tolerance
+    for ``"v2.0"`` quoted YAML form). Raises ``ValueError`` for unparseable
+    input.
+    """
+    cleaned = literal.strip().strip('"').strip("'")
+    match = _VERSION_TUPLE_RE.match(cleaned)
+    if not match:
+        raise ValueError(f"Bad spec_format_version literal: {literal!r}")
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _parse_agent_frontmatter(path: Path) -> tuple[tuple[int, int], str]:
+    """Extract ``(min_spec_format_version_tuple, id)`` from agent frontmatter.
+
+    Mirrors start.md F0.5 V2 step 2b prose: defaults absent
+    ``min_spec_format_version`` to ``v2.0`` (agents without the field are
+    version-agnostic) and absent ``id`` to a filename-derived slug
+    (``Path.stem.upper()``). Returns the defaults when the file does not
+    exist (lets the harness simulate Phase 6/7/8's future agents without
+    requiring the real files to be present).
+    """
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    block_match = _AGENT_FRONTMATTER_RE.match(text)
+    if not block_match:
+        return ((2, 0), path.stem.upper())
+    block_body = block_match.group(1)
+    min_ver_match = _AGENT_MIN_VER_RE.search(block_body)
+    id_match = _AGENT_ID_RE.search(block_body)
+    min_ver = (
+        _parse_version_literal(min_ver_match.group(1))
+        if min_ver_match
+        else (2, 0)
+    )
+    stream_id = id_match.group(1) if id_match else path.stem.upper()
+    return (min_ver, stream_id)
+
+
 @pytest.fixture
 def run_f05_decompose_with_test_roster(
     tmp_path: Path,
 ) -> Callable[..., dict]:
-    """Plan 03-01 fixture; Plan 03-04 implements the actual F0.5 roster logic.
+    """Plan 03-04 harness for F0.5 V2 step 2b's stream-skip enumeration.
 
-    SCAFFOLD ONLY in Plan 03-01: the fixture raises ``pytest.skip(...)`` if
-    invoked. This is intentional and mirrors the Phase 2 precedent
-    (``test_jaccard_tokenizer_consistency`` uses ``pytest.importorskip``):
-    the seven Phase 3 RED stubs that consume this fixture are collected
-    cleanly but SKIP at run-time, so the Plan 03-01 baseline shows the full
-    Phase 3 test surface without false-positive failures for downstream-
-    wave-owned logic.
+    Mirrors the prose at ``plugins/foundry/commands/start.md`` F0.5 V2 steps
+    2a / 2b / 2c and the F0.9 sub-check 7k re-derivation block. Returns a
+    parsed manifest dict with the same shape that a real Foundry F0.5 run
+    would produce, plus an ``f09_diagnostics`` joined-string field for the
+    five Plan 03-04 RED-to-GREEN tests.
 
-    Plan 03-04 will replace the ``pytest.skip`` body with:
-      - Build a spec at ``tmp_path/spec.md`` declaring the requested
-        ``spec_format_version`` (frontmatter only, no body required).
-      - Invoke the F0.5 roster-enumeration harness (Plan 03-04 provides a
-        thin Python harness OR a separate test helper script that performs
-        the same enumeration as ``plugins/foundry/commands/start.md`` prose).
-      - Read ``tmp_path/castings/manifest.json`` and return the parsed dict.
+    RESEARCH.md Pitfall 7 calls out the drift risk between this harness's
+    Python logic and start.md's prose. Drift detection lives in:
+      (a) ``test_f05_step_2b_and_f09_7k_reference_same_roster`` — asserts
+          both prose blocks list the same agent-path set OR sub-check 7k
+          uses the explicit "same hardcoded list as F0.5 step 2b"
+          by-reference phrase;
+      (b) reviewer grep for ``STREAM_SKIP_INCOMPLETE`` /
+          ``STREAM_SKIP_UNEXPECTED`` / ``STREAM_SKIP_MALFORMED`` in both
+          ``conftest.py`` and ``start.md`` — drift surfaces as
+          mismatched grep counts.
 
-    The fixture signature is locked NOW so Plans 03-04's RED-to-GREEN
-    transition is a fixture-body swap, not a fixture-signature change.
+    Args:
+        spec_format_version: literal string (``"v2.0"`` / ``"v2.1"`` /
+            ``None``). ``None`` is the implicit-v2.0 path (matches
+            start.md F0.5 step 2a's "absent → default to v2.0" rule).
+        extra_agent_paths: optional list of synthetic agent fixture paths
+            to inject into the roster IN ADDITION to the default Phase 3
+            ship-state roster. Plan 03-01's
+            ``tests/fixtures/agents/agent_phase3_test_stream.md`` is the
+            canonical injection (declares ``min_spec_format_version: v2.1``
+            so a v2.0 spec produces a deterministic skip record).
+        omit_required_record: if True, force ``stream_skips`` to ``[]``
+            even when a record SHOULD have been emitted. Used by
+            ``test_f09_subcheck_7k_catches_missing`` to drive the F0.9
+            sub-check 7k STREAM_SKIP_INCOMPLETE error path.
+        inject_unexpected_record: if True, append a record for an
+            already-rostered agent whose min ≤ spec version (false
+            positive). Used by ``test_f09_subcheck_7k_catches_unexpected``
+            to drive the STREAM_SKIP_UNEXPECTED error path.
+        inject_malformed_record: if True, append a record missing
+            required keys to drive the STREAM_SKIP_MALFORMED error path.
 
-    Usage (Plan 03-04 onward):
-        result = run_f05_decompose_with_test_roster(
-            spec_format_version="v2.0",
-            extra_agent_paths=[fixtures_dir / "agents" / "agent_phase3_test_stream.md"],
-        )
-        assert result["stream_skips"][0]["stream_id"] == "PHASE3-TEST-STREAM"
+    Returns:
+        dict with keys:
+          - ``spec_format_version`` (str | None) — input literal verbatim
+          - ``spec_format_version_tuple`` (tuple[int,int]) — parsed tuple
+          - ``stream_skips`` (list[dict]) — F0.5 V2 step 2b emission
+          - ``stdout_summary`` (str) — F0.5 V2 step 2c summary line
+          - ``f09_diagnostics`` (str) — newline-joined sub-check 7k tokens
+            (joined string preserves ``in`` substring lookups in the
+            Plan 03-01 stubs without requiring assertion edits)
+
+    Plan 03-04 ownership: harness body lands here; Plan 03-01's pytest.skip
+    stub is removed. Future phases (6/7/8) update ``_DEFAULT_F05_ROSTER``
+    above to add their agent paths in lock-step with start.md F0.5 V2
+    step 2b's hardcoded list.
     """
 
     def _runner(
         spec_format_version: str | None,
         extra_agent_paths: list[Path] | None = None,
+        *,
+        omit_required_record: bool = False,
+        inject_unexpected_record: bool = False,
+        inject_malformed_record: bool = False,
     ) -> dict:
-        pytest.skip(
-            "Plan 03-04 implements F0.5 roster logic. "
-            "run_f05_decompose_with_test_roster is a Plan 03-01 scaffold "
-            "stub — the seven RED stubs that consume it collect cleanly "
-            "but skip at run-time until Plan 03-04 lands the harness."
-        )
+        # Step 2a: parse spec_format_version (or default to v2.0).
+        spec_literal = spec_format_version or "v2.0"
+        spec_tuple = _parse_version_literal(spec_literal)
+
+        # Step 2b: enumerate roster (default + extras) and emit
+        # stream_skips. Roster ordering mirrors start.md prose:
+        # default ship-state agents first, then any extras (Plan 03-04
+        # injection point for the synthetic test agent).
+        roster: list[Path] = list(_DEFAULT_F05_ROSTER)
+        if extra_agent_paths:
+            roster.extend(extra_agent_paths)
+
+        stream_skips: list[dict] = []
+        for agent_path in roster:
+            min_ver, stream_id = _parse_agent_frontmatter(agent_path)
+            if min_ver > spec_tuple:
+                # Compute agent_path as repo-relative when possible so the
+                # record is stable across CI sandbox roots.
+                try:
+                    rel_path = str(
+                        agent_path.relative_to(PLUGIN_ROOT.parent.parent)
+                    )
+                except ValueError:
+                    rel_path = str(agent_path)
+                stream_skips.append(
+                    {
+                        "stream_id": stream_id,
+                        "reason": "spec_format_version",
+                        "spec_version": spec_literal,
+                        "stream_min": f"v{min_ver[0]}.{min_ver[1]}",
+                        "agent_path": rel_path,
+                    }
+                )
+
+        # Test-harness controls for exercising F0.9 sub-check 7k error
+        # paths. These mutate stream_skips AFTER the legitimate emission
+        # so the sub-check 7k re-derivation (below) sees the corrupted
+        # array and emits the correct error token.
+        if omit_required_record:
+            stream_skips = []
+        if inject_unexpected_record:
+            # Record for an already-rostered agent whose min ≤ spec
+            # version — sub-check 7k must flag this as
+            # STREAM_SKIP_UNEXPECTED.
+            stream_skips.append(
+                {
+                    "stream_id": "TRACER",
+                    "reason": "spec_format_version",
+                    "spec_version": spec_literal,
+                    "stream_min": "v2.0",
+                    "agent_path": "plugins/foundry/agents/tracer.md",
+                }
+            )
+        if inject_malformed_record:
+            stream_skips.append(
+                {
+                    "stream_id": "MALFORMED",
+                    "reason": "spec_format_version",
+                    # Missing stream_min, spec_version, agent_path
+                }
+            )
+
+        # Step 2c: stdout summary line. HUMAN/CI signal only — must NOT
+        # appear inside any casting prompt (RESEARCH.md Pitfall 3,
+        # enforced by test_f05_stdout_summary_not_in_casting_prompt).
+        if stream_skips:
+            names = ", ".join(r.get("stream_id", "?") for r in stream_skips)
+            stdout_summary = (
+                f"F0.5 stream-skipped: {len(stream_skips)} streams skipped "
+                f"({names}) — spec_format_version: {spec_literal} below minimum"
+            )
+        else:
+            stdout_summary = (
+                f"F0.5 stream-skipped: 0 streams skipped "
+                f"(spec_format_version: {spec_literal} — engages all streams)"
+            )
+
+        # F0.9 sub-check 7k re-derivation. Mirrors start.md F0.9 dimension
+        # 7 sub-check 7k prose: identical roster, identical default-
+        # version-v2.0, identical tuple-compare. Three error tokens.
+        diagnostics: list[str] = []
+        expected_records: list[dict] = []
+        for agent_path in roster:
+            min_ver, stream_id = _parse_agent_frontmatter(agent_path)
+            if min_ver > spec_tuple:
+                expected_records.append(
+                    {"stream_id": stream_id, "agent_path": str(agent_path)}
+                )
+
+        recorded_well_formed = [
+            r for r in stream_skips
+            if _STREAM_SKIP_REQUIRED_KEYS.issubset(r.keys())
+        ]
+        recorded_ids = {r["stream_id"] for r in recorded_well_formed}
+        expected_ids = {e["stream_id"] for e in expected_records}
+
+        for missing_id in sorted(expected_ids - recorded_ids):
+            missing_record = next(
+                e for e in expected_records if e["stream_id"] == missing_id
+            )
+            diagnostics.append(
+                f"STREAM_SKIP_INCOMPLETE: agent '{missing_id}' "
+                f"({missing_record['agent_path']}) missing from "
+                f"manifest.stream_skips"
+            )
+        for extra_id in sorted(recorded_ids - expected_ids):
+            diagnostics.append(
+                f"STREAM_SKIP_UNEXPECTED: '{extra_id}' recorded but "
+                f"its min_spec_format_version <= spec_format_version_tuple"
+            )
+        for record in stream_skips:
+            missing_keys = _STREAM_SKIP_REQUIRED_KEYS - record.keys()
+            if missing_keys:
+                diagnostics.append(
+                    f"STREAM_SKIP_MALFORMED: record "
+                    f"'{record.get('stream_id', '<unknown>')}' missing "
+                    f"required keys {sorted(missing_keys)}"
+                )
+
+        return {
+            "spec_format_version": spec_format_version,
+            "spec_format_version_tuple": spec_tuple,
+            "stream_skips": stream_skips,
+            "stdout_summary": stdout_summary,
+            "f09_diagnostics": "\n".join(diagnostics),
+        }
 
     return _runner
