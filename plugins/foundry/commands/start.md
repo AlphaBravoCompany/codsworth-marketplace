@@ -99,6 +99,46 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
    If any of these three sections is missing from spec.md (legacy v4.2.0 specs synthesized before Phase 2 land), set the corresponding manifest field to the empty string AND emit a `decompose_warning: typed_section_missing/{section_name}` record. Phase 3 (TYPE-02) `spec_format_version` frontmatter is the actual mode switch; until then, missing typed sections are non-fatal at decompose time but downstream agents (Phase 6 PROBE-01, Phase 7 TEST-01, Phase 8 INTENT-01) will receive empty blocks and may emit lower-confidence findings.
 
    **Never paraphrase, never filter, never omit.** The typed-table propagation is the citation surface for adversarial spec review and code-blind testing — paraphrase would defeat the deterministic grep contract.
+
+2a. **Extract `spec_format_version` from spec frontmatter (Phase 3 / TYPE-02).** Read the YAML-style frontmatter block at the top of `spec.md` (delimited by `---` lines, anchored at file start — regex shape `\A---\s*\n(.*?)\n---\s*\n`, mirroring `plugins/forge/scripts/validate-spec.py` `extract_frontmatter`). If the `spec_format_version` field is present, parse it to a `(major, minor)` tuple (e.g., `v2.1` → `(2, 1)`); accept quoted (`"v2.1"`) or bare values; reject anything outside `KNOWN_SPEC_FORMAT_VERSIONS = ("v2.0", "v2.1")` by halting decompose with `SPEC_FORMAT_VERSION_UNKNOWN` (validate-spec.py at R4 already guards this; F0.5 mirrors the rejection so a hand-edited bad spec doesn't slip past). If the field is absent (or there is no frontmatter block at all), default to `v2.0` → `(2, 0)` per Phase 3 / TYPE-02 implicit-default policy — legacy v4.2.0 specs in dependent projects build unchanged. Store both forms on the manifest:
+   - `manifest.spec_format_version` — the literal string (e.g., `"v2.1"` or `"v2.0"` for the implicit-default path)
+   - `manifest.spec_format_version_tuple` — the parsed `(major, minor)` tuple
+
+2b. **Enumerate the version-gated stream agent roster and emit `manifest.stream_skips` (Phase 3 / TYPE-02).** The roster is the following hardcoded path list spanning BOTH plugins (one-way read across plugin boundary — F0.5 reads `plugins/forge/agents/*.md` for Forge-side streams but never writes to forge/):
+
+   - `plugins/foundry/agents/tracer.md` (TRACE)
+   - `plugins/foundry/agents/flow-tracer.md` (FLOW_TRACE)
+   - `plugins/foundry/agents/assayer.md` (PROVE)
+   - `plugins/foundry/agents/research-auditor.md` (RESEARCH_AUDIT)
+   - `plugins/foundry/agents/coverage-diff.md` (COVERAGE_DIFF)
+   - [Future: PROBE-01 → `plugins/forge/agents/spec-reviewer.md` added by Phase 6]
+   - [Future: TEST-01 → `plugins/foundry/agents/spec-test-deriver.md` added by Phase 7]
+   - [Future: INTENT-01 → `plugins/foundry/agents/intent-carrier.md` added by Phase 8]
+
+   For each agent path: parse its YAML frontmatter (same `---\n...\n---\n` block-extract as the spec frontmatter); read `min_spec_format_version` (default `v2.0` if absent — agents without the field are version-agnostic per CONTEXT.md "Stream min-version declaration") and `id` (default to a slug derived from the filename if absent). Parse `min_spec_format_version` to a `(major, minor)` tuple via the same parser as step 2a; if the parsed tuple > `manifest.spec_format_version_tuple`, append a record to `manifest.stream_skips`:
+
+   ```json
+   {
+     "stream_id": "<id>",
+     "reason": "spec_format_version",
+     "spec_version": "<v2.X>",
+     "stream_min": "<v2.Y>",
+     "agent_path": "<path>"
+   }
+   ```
+
+   All five fields are REQUIRED — F0.9 sub-check 7k's `STREAM_SKIP_MALFORMED` error fires if any field is absent. The array is always present in the manifest (initialize to `[]` before enumeration begins) — even on modern v2.1 specs that need no skips, the field appears as `manifest.stream_skips: []`. Field absence (vs empty-array presence) means F0.5 didn't run, which is itself a defect surfaced by F0.9 sub-check 7k.
+
+   The Phase 3 ship-state of the five existing agents is that NONE declare `min_spec_format_version`, so they all default to v2.0 → none ever appear in `manifest.stream_skips` for any spec version. Phase 3 exercises the comparison logic exclusively via the synthetic test agent fixture (Plan 03-01 `tests/fixtures/agents/agent_phase3_test_stream.md`). Phases 6/7/8 add their agent files to the roster AND declare `min_spec_format_version: v2.1`, at which point a v2.0 spec emits three real skip records.
+
+   Non-agent streams (SIGHT, TEST/PROBE in the F2 INSPECT list at line 382) are always-available, no min-version, do not appear in this roster, and cannot be stream-skipped.
+
+2c. **Print stdout summary** (one line, regardless of count). Examples:
+   - With skips: `F0.5 stream-skipped: 3 streams skipped (PROBE-01, INTENT-01, TEST-01) — spec_format_version: v2.0 below v2.1 minimum`
+   - Without skips: `F0.5 stream-skipped: 0 streams skipped (spec_format_version: v2.1 — engages all streams)`
+
+   The summary is a HUMAN/CI signal only. It is emitted at F0.5 entry BEFORE any casting prompt is written; the literal `F0.5 stream-skipped:` substring MUST NOT appear inside any `castings/casting-*-prompt.md` (RESEARCH.md Pitfall 3 — wave-level prompt-cache locality requires stable byte-for-byte casting prompts). Any background agent that writes a casting prompt must avoid echoing this summary into prompt files; the F0.9 validate step grepping `F0.5 stream-skipped:` against the casting-prompt corpus would surface a leak.
+
 3. **Extract mandatory rules.** If `codebase/MANDATORY_RULES.md` exists from F0 mapping, copy its body verbatim to `manifest.mandatory_rules`. Otherwise empty string. Never filter.
 3a. **Index PATTERNS.md by file.** If `patterns/PATTERNS.md` is not the SKIPPED sentinel: parse `## File Classification` into a lookup `{file_path → analog, match_quality}`. Parse `## Pattern Assignments` into per-file blocks `{file_path → full block (Imports + Setup + Core + Error)}`. Parse `## Shared Patterns` into `{role → list of excerpts with "Apply to:" lines}`. If PATTERNS.md is SKIPPED, every casting's `<analog_pattern>` block is the sentinel `Pattern map skipped — {reason}. Use research and codebase conventions instead.` and every `<shared_patterns>` block is empty.
 4. Identify 2-5 domains. Spawn parallel **background** Agents (1 per domain, max 5; `subagent_type='general-purpose'`, `run_in_background=true`, `mode='bypassPermissions'`). No team needed — these are short-lived file writers and don't need `TeamCreate`/shutdown coordination. Each agent writes:
@@ -330,6 +370,15 @@ Call `Foundry-Validate-Castings` — runs 10 dimensions:
 
    - **7j. `<contracts>` propagation byte-identical to manifest.** Same shape as 7h, applied to the `<contracts>` block and `manifest.contracts_table`. Sentinel rows MUST propagate byte-identical (same rationale as 7i). Skipped for V3.
 
+   - **7k. `manifest.stream_skips` matches re-derived expected set (Phase 3 / TYPE-02).** Re-enumerate the version-gated agent roster using the **same hardcoded list as F0.5 step 2b** (cross-plugin `plugins/forge/agents/*.md` + `plugins/foundry/agents/*.md` paths); re-parse each agent's `min_spec_format_version` and `id` (defaulting absent fields to `v2.0` and a filename-derived slug, identical to F0.5 step 2b); recompute the expected skip set against `manifest.spec_format_version_tuple`; compare to the recorded `manifest.stream_skips` array.
+     - Error `STREAM_SKIP_INCOMPLETE` if an agent whose `min_spec_format_version` tuple > `manifest.spec_format_version_tuple` is missing from `manifest.stream_skips`. Names the missing `stream_id` + `agent_path` so the reviewer can grep both step 2b's roster and the manifest.
+     - Error `STREAM_SKIP_UNEXPECTED` if `manifest.stream_skips` contains a record for an agent whose `min_spec_format_version` tuple ≤ `manifest.spec_format_version_tuple` (false positive — emission rule fired when it shouldn't have).
+     - Error `STREAM_SKIP_MALFORMED` if any record is missing one or more of the five required fields (`stream_id` / `reason` / `spec_version` / `stream_min` / `agent_path`).
+
+     Diagnostic precision over composite check (mirrors 7h / 7i / 7j pattern): a failure here pinpoints exactly which stream's record is wrong rather than emitting a single "stream-skip propagation failed" composite. Runs uniformly for V2 and V3 (V3 specs carry their own `spec_format_version` on the compatibility-layer `spec.md`).
+
+     **Drift discipline (RESEARCH.md Pitfall 7):** sub-check 7k uses the IDENTICAL hardcoded roster + IDENTICAL default-version-v2.0 + IDENTICAL tuple-compare semantics as F0.5 step 2b. If those drift, 7k either false-positives or false-negatives in lock-step with F0.5's emission bug. The roster appears in two places by design (defense-in-depth via re-derivation); a regression test in `plugins/forge/tests/test_versioned_spec_format.py` (`test_f05_step_2b_and_f09_7k_reference_same_roster`) asserts both prose blocks list the same agent-path set OR sub-check 7k uses an explicit "same hardcoded list as F0.5 step 2b" by-reference phrase.
+
 8. **Migration Coverage** — MIGRATION specs only; 1:1 coverage_list
 9. **Spec Structure** — spec has tagged req IDs (error); spec has `## Global Invariants` section (warning)
 10. **File Change Map ↔ key_files cross-check** — every file in spec's `## File Change Map` must appear in exactly one casting's key_files (error if orphaned — the change is unimplementable). Files in key_files but not in the map are flagged as scope creep (warning). Skipped if the spec has no File Change Map section.
@@ -388,6 +437,8 @@ Call `Foundry-Gate(phase='cast')`.
 - **COVERAGE_DIFF** — MIGRATION only. Agent with `agents/coverage-diff.md` (sonnet). 1:1 source → destination check.
 - **SIGHT** — lead runs Playwright directly (only exception to "lead never does work").
 - **TEST / PROBE** — inline test suite / API smoke.
+
+*Streams whose agent declares `min_spec_format_version` exceeding `manifest.spec_format_version_tuple` are predictively skipped at F0.5 (see F0.5 V2 step 2b) and recorded in `manifest.stream_skips`. F2 invokes only the streams not in the skip list; F0.9 sub-check 7k re-derives the expected skip set and compares to the recorded array. Phase 3 / TYPE-02.*
 
 Sync all findings: `Foundry-Sync`. Don't trust build-green alone — stubs compile.
 
