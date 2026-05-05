@@ -1252,7 +1252,12 @@ def check_typed_sections(
         section_bodies[heading_lower] = section_body
         rows = list(_iter_table_rows(section_body))
         if not section_body.strip() or not rows:
-            report.warn(
+            # Phase 3 / TYPE-02: severity is gated on spec_format_version.
+            # Specs declaring v2.1+ hard-fail; v2.0 / missing-frontmatter
+            # specs still warn-only. Message text identical across
+            # branches for grep-stability of TYPE_TABLES_MISSING /
+            # spec_format_version / Phase 3 / TYPE-02 tokens.
+            _msg = (
                 f"TYPE_TABLES_MISSING: spec is missing the "
                 f"'## {heading_lower.title()}' typed section or its markdown "
                 f"table. Phase 6 PROBE-01, Phase 7 TEST-01, and Phase 8 "
@@ -1262,6 +1267,10 @@ def check_typed_sections(
                 f"this to a hard FAILURE for specs declaring "
                 f"spec_format_version >= v2.1."
             )
+            if spec_version_tuple >= (2, 1):
+                report.fail(_msg)
+            else:
+                report.warn(_msg)
             continue
         # Column-count check on the first data row (or sentinel row).
         first_row = rows[0]
