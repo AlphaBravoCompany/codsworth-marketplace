@@ -1301,6 +1301,160 @@ These rules are non-negotiable. If any of them fails, the spec cannot be finaliz
 SPEC_PROMPT_EOF
 
 # =========================================================================
+# PHASE R3.5: SPEC REVIEW — Adversarial ambiguity reviewer (PROBE-01)
+# =========================================================================
+
+cat >> "$PROMPT_FILE" << 'SPEC_REVIEW_PROMPT_EOF'
+
+## PHASE R3.5: SPEC REVIEW — Adversarial Ambiguity Review (PROBE-01)
+
+This phase runs AFTER you have written the draft spec body (step 4 of FINALIZATION
+SEQUENCE) and BEFORE the deterministic R4 Verbatim-Fidelity Gate (step 5). The
+reviewer is code-path enforced: do NOT output `<promise>SPEC FORGED</promise>`
+until R3.5 passes (verdict: "pass").
+
+R3.5 only activates for `spec_format_version: v2.1`+ specs. v2.0 specs skip R3.5
+(F0.5 step 2b stream-skip roster covers PROBE-01 for legacy v2.0 specs — no
+behavior change for v4.2.0-era dependent projects).
+
+Spawn the spec-reviewer agent (`plugins/forge/agents/spec-reviewer.md`,
+`id: PROBE-01`, `model: sonnet`) via the Agent tool. Its tools are
+`Read, Write, Grep, Glob` — read-and-emit only, no `Edit`/`Bash`/`Task`.
+
+### MANDATORY TOOL-CALL ORDER (enforced)
+
+The reviewer MUST read in this order:
+
+1. Read `transcript.md` FIRST (full file — do not truncate, do not skim).
+2. Then read the draft `spec.md`.
+
+If the reviewer reads spec.md before transcript.md (the easier read order — the
+spec is the more interesting document, the transcript is repetitive), the spec
+biases the review. To prevent this self-anchoring, the reviewer MUST emit the
+following structural error and STOP:
+
+```json
+{"review_version":"v1.0","verdict":"block","flag_count":0,"flags":[],"reviewer_order_violation":true}
+```
+
+The validator detects `reviewer_order_violation: true` and forces the reviewer
+to be re-spawned with a fresh context. Do NOT label legitimate flags with this
+token — it is the structural error emitted only when read order was violated.
+
+### REVIEWER RUBRIC — what to flag (A-NNN-cited only)
+
+The reviewer MAY flag ONLY contradictions or ambiguities directly grounded in
+an existing A-NNN transcript answer. Every flag MUST cite a specific A-NNN.
+
+Flag when:
+
+- A typed-table row (`## Global Invariants` / `## State Transitions` / `## Contracts`)
+  cites A-NNN but the row's content cells (statement, applies-to, from-state,
+  to-state, trigger, surface, input, output, errors) misrepresent what A-NNN's
+  body actually says.
+- Two typed-table rows cite the same A-NNN and make contradictory claims about
+  it (e.g., CT-001 and GI-002 both cite A-005 but disagree on scope or shape).
+- A Locked FR/NFR/AC quotes A-NNN verbatim, but the quote, in context of the
+  full A-NNN body, admits multiple contradictory valid implementations
+  (e.g., A-007 says "we use bcrypt or argon2 — both fine"; FR-003 cites A-007
+  with the Locked quote "we use bcrypt" without resolving the OR).
+
+Do NOT flag:
+
+- Missing detail the user never mentioned (no A-NNN = no flag).
+- Items `validate-spec.py` already enforces (citation syntax, Jaccard paraphrase,
+  verbatim-quote correctness, dangling A-NNN references, survey-only requirements).
+- Style or completeness preferences not grounded in a transcript answer.
+- Architectural advice or refactoring suggestions.
+
+### 5-FLAG BUDGET CEILING
+
+Emit AT MOST 5 flags. The output validator (`validate_spec_review.py`) rejects
+any output with `len(flags) > 5`. If the reviewer genuinely identifies more than
+5 contradictions, emit the 5 highest-severity ones — flags whose ambiguity has
+the most concrete, transcript-grounded support. Do not pad to reach 5;
+under-shooting is acceptable. >5 flags means >5 user clarifications which is
+more attention than most users sustain in a single R2 INTERVIEW round.
+
+### OUTPUT: spec-review.json (closed schema)
+
+Write to: `{SESSION_DIR}/spec-review.json`
+
+Format (closed vocabulary — unknown top-level or per-flag keys are rejected):
+
+```json
+{
+  "review_version": "v1.0",
+  "verdict": "pass" | "block",
+  "flag_count": 0,
+  "flags": [
+    {
+      "id": "FLAG-NNN",
+      "citation": "A-NNN",
+      "typed_row": "GI-NNN | ST-NNN | CT-NNN | null",
+      "ambiguity": "one-sentence description of the contradiction"
+    }
+  ],
+  "reviewer_order_violation": false
+}
+```
+
+**Closed-schema rules** (validator enforces every one of these):
+
+- Top-level keys allowed: `review_version`, `verdict`, `flag_count`, `flags`, `reviewer_order_violation`. Forbidden: `suggested_fix`, `recommendation`, `warnings`, `severity`, `notes`, `summary`, `metadata`, `confidence`, or any other top-level key.
+- Per-flag keys allowed: `id`, `citation`, `typed_row`, `ambiguity`. Forbidden: `suggested_fix`, `recommendation`, `severity`, `confidence`, `priority`, `category`, `reasoning`, or any other per-flag key.
+- `verdict` MUST be `"block"` whenever `len(flags) > 0`. `verdict` MUST be `"pass"` whenever `len(flags) == 0` AND `reviewer_order_violation == false`. Advisory shape (`verdict: "pass"` with non-empty flags) is rejected.
+- `len(flags) <= 5`. Validator rejects `len(flags) > 5`.
+- Every flag's `citation` MUST be a non-empty string AND MUST resolve to a real `A-NNN` (or `A-AUTO-NNN`) in `transcript.md`.
+
+### Validator invocation
+
+After the reviewer agent emits `spec-review.json`, run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate_spec_review.py" \
+  <SESSION_DIR>/spec-review.json <TRANSCRIPT_PATH>
+```
+
+Inspect the exit code:
+
+- **Exit 0 AND `verdict == "pass"`** → R3.5 passes. Proceed to step 5 of FINALIZATION SEQUENCE (run `validate-spec.py`).
+- **Exit 0 AND `verdict == "block"`** → R3.5 blocks. The schema is well-formed, the citations resolve, the budget is respected, but the reviewer found ≥1 transcript-grounded ambiguity. Follow the ON BLOCK procedure below.
+- **Exit 1** → validator rejected the spec-review.json (schema violation, dangling citation, advisory mode, budget exceeded, order violation, etc.). Read the printed `FAIL:` lines, fix the spec-review.json (or re-spawn the reviewer agent if it produced malformed output), re-invoke. Do NOT proceed to step 5 until exit 0.
+- **Exit 2** → usage error (wrong arguments). Fix the invocation.
+
+### ON PASS (verdict: "pass")
+
+Proceed to step 5 of FINALIZATION SEQUENCE (run `validate-spec.py` for the R4
+Verbatim-Fidelity Gate). The reviewer's clean verdict does NOT imply the R4 gate
+will also pass — they are independent gates. R3.5 catches transcript-grounded
+ambiguities; R4 catches verbatim-fidelity violations.
+
+### ON BLOCK (verdict: "block")
+
+The reviewer does NOT resolve any flag. Resolution is the user's job, executed
+via R2 INTERVIEW.
+
+1. Print each flag's `ambiguity` text to the session (so the user sees the
+   issues the reviewer raised).
+2. Return to **R2 INTERVIEW** — ask the user to clarify each flag via
+   `AskUserQuestion`. The user's answers become new `A-NNN` entries in
+   `transcript.md` (same verbatim transcript discipline as R2: stable IDs,
+   no paraphrase, append-only).
+3. Re-run **R3 SPEC** (FINALIZATION SEQUENCE step 4) — regenerate the spec
+   body re-reading the full augmented transcript, so the new A-NNN answers
+   are reflected in the typed tables and Locked requirements.
+4. Re-run **R3.5** (this phase). Loop until `verdict == "pass"`.
+
+Do NOT auto-resolve any ambiguity. The reviewer surfaces; the user resolves.
+`<promise>SPEC FORGED</promise>` is structurally unreachable until R3.5 passes
+(SPEC FORGED is emitted in step 10 of FINALIZATION SEQUENCE, which follows
+step 5 — `validate-spec.py` exits 0 — which itself follows step 4.5 — R3.5
+verdict == "pass"). Both R3.5 and R4 must clear.
+
+SPEC_REVIEW_PROMPT_EOF
+
+# =========================================================================
 # PHASE R4: VALIDATE — Self-check
 # =========================================================================
 
@@ -1475,6 +1629,16 @@ When the user says "done", "finalize", "finished", or similar:
    ```
    Then paste the full byte content of `transcript.md` — every Q-NNN and A-NNN block, the file header, everything. No truncation, no summary, no "[transcript continues]" ellipses. A byte-for-byte copy.
 4. Write the complete draft spec (body + appendix) to the spec path in a single Write call. (Use the canonical SPEC_PATH — the script needs a real file to validate.)
+4.5. **Run the R3.5 spec-review gate (PROBE-01 — `spec_format_version: v2.1`+ only).** Spawn the spec-reviewer agent (`plugins/forge/agents/spec-reviewer.md`, `id: PROBE-01`, `model: sonnet`). The agent reads `transcript.md` FIRST then the draft `spec.md`, and writes `{SESSION_DIR}/spec-review.json` with up to 5 A-NNN-cited ambiguity flags and a binary block/pass verdict. Then run:
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate_spec_review.py" <SESSION_DIR>/spec-review.json <TRANSCRIPT_PATH>
+   ```
+   - Exit 0 AND `verdict == "pass"`: proceed to step 5.
+   - Exit 0 AND `verdict == "block"`: print each flag's `ambiguity` text, return to R2 INTERVIEW for resolution (the user's answers append to `transcript.md` as new A-NNN entries, same verbatim discipline as R2), re-run step 4 (regenerate the spec body re-reading the augmented transcript), re-run step 4.5. Loop until `verdict == "pass"`.
+   - Exit 1: validator rejected the spec-review.json (schema violation, dangling citation, advisory mode, budget exceeded, order violation, etc.). Read the printed FAIL: lines, fix the spec-review.json (or re-spawn the reviewer agent if it produced malformed output), re-invoke. Do NOT proceed to step 5 until exit 0 + `verdict == "pass"`.
+   - Exit 2: usage error. Fix the invocation.
+
+   `<promise>SPEC FORGED</promise>` is structurally unreachable until R3.5 passes. Phase 6 PROBE-01 only activates for `spec_format_version: v2.1`+ specs; v2.0 specs skip step 4.5 (the F0.5 step 2b stream-skip roster covers PROBE-01 for legacy v2.0 specs — no behavior change for v4.2.0-era dependent projects).
 5. **Run the deterministic R4 Verbatim-Fidelity Gate:**
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate-spec.py" <SPEC_PATH> <TRANSCRIPT_PATH>
