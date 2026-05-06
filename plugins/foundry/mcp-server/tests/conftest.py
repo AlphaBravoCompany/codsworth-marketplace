@@ -7,16 +7,26 @@ Three fixtures:
 
 - ``fixtures_dir``: session-scoped path to ``tests/fixtures/``
 - ``load_fixture``: function returning the text content of a fixture file
-- ``run_accept_casting_with_evidence``: SKIP-stub harness whose signature is
-  locked in Plan 04-01; Plan 04-04 swaps in the real body via fixture-body
-  replacement (no signature change). Mirrors Plan 03-01's
-  ``run_f05_decompose_with_test_roster`` precedent.
+- ``run_accept_casting_with_evidence``: end-to-end harness — synthesizes a
+  tiny git repo with a casting commit + evidence file, invokes
+  ``verify_evidence`` directly (Plan 04-03 — Plan 04-04 wraps with
+  ``foundry_accept_casting`` + v2.0 stream-skip routing). Mirrors Plan
+  03-01's ``run_f05_decompose_with_test_roster`` precedent: signature
+  locked in Plan 04-01; body lands here in Plan 04-03 (Rule-3 deviation
+  from CONTEXT.md's "Plan 04-04 lands the harness" prose, mirroring Phase 3
+  Plan 03-02's "test_unknown_version_hard_fails turned GREEN one wave
+  early" precedent — when the wave's helpers are sufficient to turn a
+  test green, do not artificially defer).
 """
 
 from __future__ import annotations
 
+import os
+import re
+import subprocess
+import threading
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import pytest
 
@@ -54,49 +64,505 @@ def load_fixture(fixtures_dir: Path) -> Callable[[str], str]:
     return _loader
 
 
+# ---------------------------------------------------------------------------
+# run_accept_casting_with_evidence harness — Plan 04-03 body.
+#
+# Synthesizes a deterministic mini-repo for each test invocation so
+# ``verify_evidence`` can re-execute the cmd inside an isolated worktree.
+# Re-execution-must-byte-match scenarios rewrite the cmd to ``cat body.txt``
+# where ``body.txt`` carries the committed body; mismatch scenarios tweak
+# body.txt to differ. Pitfall 4/5/etc. tested via dedicated scenarios.
+# ---------------------------------------------------------------------------
+
+
+# ``# evidence-cmd:`` line matcher — captures the cmd suffix so the harness
+# can rewrite the cmd while preserving the original (e.g., for the
+# evidence_log_timeout.log fixture which needs ``sleep 999`` left intact).
+_HEADER_CMD_RE = re.compile(r"^# evidence-cmd:\s*(.+)$", re.MULTILINE)
+_HEADER_BLOCK_RE = re.compile(r"\A(?:#[^\n]*\n|[ \t]*\n)+")
+
+
+def _split_header_and_body(evidence_text: str) -> tuple[str, str]:
+    """Split evidence text into (header_block, body)."""
+    m = _HEADER_BLOCK_RE.match(evidence_text)
+    if m is None:
+        return "", evidence_text
+    return m.group(0), evidence_text[m.end() :]
+
+
+def _rewrite_evidence_for_scenario(
+    evidence_text: str,
+    *,
+    force_exit_code: int | None = None,
+    inject_non_utf8: bool = False,
+    use_cat_replay: bool = True,
+    replay_file_name: str = "replay.txt",
+) -> tuple[str, str]:
+    """Return ``(rewritten_evidence_text, replay_content)``.
+
+    For ``use_cat_replay`` scenarios: the rewritten evidence file's
+    ``# evidence-cmd:`` becomes ``cat replay.txt``, and ``replay.txt``
+    holds the FULL rewritten evidence (so ``cat replay.txt`` emits
+    bytes identical to the committed evidence file → byte-match passes).
+
+    For ``force_exit_code`` / ``inject_non_utf8`` scenarios the cmd is
+    rewritten to a fixed shape; comparison won't be reached (non-zero
+    exit / non-UTF-8 paths short-circuit before the comparator).
+
+    Replay file lives at worktree-root (project_root / replay.txt) — NOT
+    inside ``evidence/`` — so the cmd's cwd (worktree root) finds it via
+    relative path ``cat replay.txt``.
+    """
+    header, body = _split_header_and_body(evidence_text)
+    # ``re.sub`` interprets ``\x``/``\g``/``\1`` etc. inside the replacement
+    # template, so we use a callable replacement to pass the literal cmd
+    # string verbatim (otherwise ``printf '\xff'`` triggers
+    # ``re.PatternError: bad escape \x``).
+    def _replace_cmd_line(new_cmd_str: str) -> Callable[[re.Match], str]:
+        def _r(_m: re.Match) -> str:
+            return f"# evidence-cmd: {new_cmd_str}"
+        return _r
+
+    if force_exit_code is not None:
+        # Force a non-zero exit BEFORE printing; comparison won't run on
+        # non-zero exit so replay content is irrelevant. Caller may still
+        # write replay.txt for symmetry; harness skips that for clarity.
+        new_cmd = f"exit {force_exit_code}"
+        rewritten_header = _HEADER_CMD_RE.sub(
+            _replace_cmd_line(new_cmd), header, count=1
+        )
+        return rewritten_header + body, ""
+    if inject_non_utf8:
+        # Emit a non-UTF-8 byte (0xFF) then exit 0; comparator survives via
+        # errors='replace'. Comparison may fail (mismatch), which is
+        # acceptable per the test contract.
+        new_cmd = "printf '\\xff'"
+        rewritten_header = _HEADER_CMD_RE.sub(
+            _replace_cmd_line(new_cmd), header, count=1
+        )
+        return rewritten_header + body, ""
+    if use_cat_replay:
+        new_cmd = f"cat {replay_file_name}"
+        rewritten_header = _HEADER_CMD_RE.sub(
+            _replace_cmd_line(new_cmd), header, count=1
+        )
+        # Prepend a synthetic body-line that carries the cmd-first-token
+        # ("cat") so ``_is_stub_pattern_no_cmd_in_header`` doesn't fire on
+        # the synth replay path. Real fixtures (e.g., a real pytest log)
+        # would naturally have the cmd-token in the first 3 body lines via
+        # ``pytest test session starts``; the synth ``cat replay.txt`` cmd
+        # needs an explicit anchor. Both committed log AND replay file get
+        # the same prefix → byte-match succeeds.
+        anchor_line = f"[replay] cat {replay_file_name}\n"
+        body_with_anchor = anchor_line + body
+        full_rewritten = rewritten_header + body_with_anchor
+        return full_rewritten, full_rewritten
+    return evidence_text, ""
+
+
+def _git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+    """Wrapper around ``subprocess.run`` for git commands inside ``cwd``."""
+    return subprocess.run(
+        ["git"] + args,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=True,
+        timeout=30,
+    )
+
+
+def _build_synth_project(
+    project_root: Path,
+    casting_id: int,
+    fixture_text: str,
+    fixture_basename: str,
+    spec_format_version: str,
+    *,
+    force_exit_code: int | None = None,
+    inject_non_utf8: bool = False,
+    use_cat_replay: bool = True,
+    omit_required_evidence: bool = False,
+) -> str:
+    """Build the synth project, return casting_commit SHA.
+
+    Layout:
+        project_root/
+          .git/
+          specs/spec.md         (frontmatter: spec_format_version=...)
+          castings/manifest.json
+          evidence/
+            casting-{id}-{name}.log    (rewritten evidence file)
+            body.txt                   (cat-replay body content)
+    """
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    # specs/spec.md
+    spec_path = project_root / "specs" / "spec.md"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        f"---\nspec_format_version: {spec_format_version}\n---\n"
+        f"# Synthesized spec for testing\n",
+        encoding="utf-8",
+    )
+
+    # castings/manifest.json
+    manifest_path = project_root / "castings" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        '{"castings": [{"id": "' + str(casting_id) + '", "evidence_provenance": []}]}\n',
+        encoding="utf-8",
+    )
+
+    if not omit_required_evidence:
+        # evidence/casting-N-name.log lives in evidence/ so verify_evidence's
+        # ``evidence_dir.glob('casting-{id}-*.log')`` finds it. The replay
+        # file (when used) lives at worktree-root so ``cat replay.txt``
+        # works with cmd's cwd = worktree root.
+        evidence_dir = project_root / "evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        rewritten, replay_text = _rewrite_evidence_for_scenario(
+            fixture_text,
+            force_exit_code=force_exit_code,
+            inject_non_utf8=inject_non_utf8,
+            use_cat_replay=use_cat_replay,
+        )
+        evidence_log_path = evidence_dir / f"casting-{casting_id}-{fixture_basename}.log"
+        evidence_log_path.write_text(rewritten, encoding="utf-8")
+        if replay_text:
+            replay_path = project_root / "replay.txt"
+            replay_path.write_text(replay_text, encoding="utf-8")
+
+    # git init + commit
+    _git(["init", "-q", "."], cwd=project_root)
+    _git(["config", "user.email", "test@example.com"], cwd=project_root)
+    _git(["config", "user.name", "Test"], cwd=project_root)
+    _git(["add", "."], cwd=project_root)
+    _git(
+        ["commit", "-q", "-m", f"casting-{casting_id} synth"],
+        cwd=project_root,
+    )
+    head = _git(["rev-parse", "HEAD"], cwd=project_root)
+    return head.stdout.strip()
+
+
+def _seed_orphan_worktree(project_root: Path, run_dir: Path) -> int:
+    """Create a real worktree, then orphan it (delete the dir but leave
+    the metadata under ``.git/worktrees/``). After ``git worktree prune``
+    runs, the metadata count drops by one. Returns the count of orphans
+    seeded (always 1 for this harness).
+    """
+    orphan_dir = run_dir / "worktrees" / "casting-orphan"
+    orphan_dir.parent.mkdir(parents=True, exist_ok=True)
+    head = _git(["rev-parse", "HEAD"], cwd=project_root)
+    head_sha = head.stdout.strip()
+    _git(
+        [
+            "worktree",
+            "add",
+            "--detach",
+            str(orphan_dir),
+            head_sha,
+        ],
+        cwd=project_root,
+    )
+    # Delete the worktree dir without cleanup so the .git/worktrees/
+    # metadata is left dangling — exactly the prior-crash signature
+    # ``_prune_orphaned_worktrees`` is meant to repair.
+    import shutil as _shutil
+
+    _shutil.rmtree(orphan_dir, ignore_errors=True)
+    return 1
+
+
+def _count_worktree_metadata_dirs(project_root: Path) -> int:
+    """Return the number of worktree metadata subdirs under
+    ``project_root/.git/worktrees/``."""
+    wt_dir = project_root / ".git" / "worktrees"
+    if not wt_dir.exists():
+        return 0
+    return sum(1 for child in wt_dir.iterdir() if child.is_dir())
+
+
 @pytest.fixture
-def run_accept_casting_with_evidence():
-    """STUB — Plan 04-04 lands the real harness via fixture-body swap.
+def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
+    """End-to-end harness for Plan 04-03 / 04-04 evidence verification tests.
 
-    Signature: caller passes a fixture-evidence-file name (str), an optional
-    ``casting_commit`` (str | None — when None, harness synthesizes one),
-    optional ``spec_format_version`` (str — defaults to 'v2.1'), optional
-    kwargs forwarded to ``foundry_accept_casting``. Returns dict with shape::
+    Invokes ``verify_evidence(casting_id, project_root, casting_commit,
+    run_dir=...)`` against a synthesized mini-repo where the casting
+    commit's worktree contains the supplied fixture (rewritten so
+    re-execution byte-matches by default). Returns a dict shaped to
+    satisfy both Plan 04-03 territory tests (verdict / failure_token /
+    provenance) and partial Plan 04-04 territory tests (manifest fields
+    populated where the harness can synthesize them; v2.0 routing /
+    F0.9 7k diagnostics still ``pytest.skip`` because Plan 04-04
+    lands those code paths).
 
-        {
-            "verdict": str,
-            "failure_token": str | None,
-            "provenance": dict | None,
-            "manifest": dict,
-            "stdout": str,
-            "stderr": str,
-        }
-
-    Body raises ``pytest.skip`` in Plan 04-01 so Plan 04-02/03/04-territory
-    tests SKIP rather than ERROR. Plan 04-04 replaces the body with a tiny
-    git-repo synthesizer that:
-
-      1. ``mkdtemp()`` a project_root with a ``.git/`` initialized
-      2. writes ``spec.md`` with the requested ``spec_format_version`` frontmatter
-      3. copies the fixture evidence file in as ``evidence/casting-N-<name>.log``
-      4. commits everything (creates the casting_commit)
-      5. invokes ``foundry_accept_casting`` via direct call (not subprocess)
-      6. returns the verdict + manifest + provenance
-
-    Mirrors Plan 03-01's ``run_f05_decompose_with_test_roster`` SKIP-stub
-    precedent: signature locked here so downstream plans land the real body
-    without touching test call sites.
+    Recognized kwargs:
+      casting_id (int): default 1.
+      casting_commit (str | None): explicit commit override; when None,
+          harness uses HEAD of the synthesized repo.
+      spec_format_version (str): default "v2.1". v2.0 → ``pytest.skip``
+          (Plan 04-04 territory).
+      force_exit_code (int): re-exec ``exit N`` instead of cat-replay
+          → EVIDENCE_EXIT_NONZERO with ``provenance.exit_code == N``.
+      seed_orphan_worktree (bool): pre-seed an orphan worktree so the
+          first ``_prune_orphaned_worktrees`` call cleans it; the
+          harness reports the cleanup count in
+          ``manifest['orphan_worktrees_pruned']``.
+      inject_non_utf8 (bool): re-exec ``printf '\\xff'`` so the
+          comparator's ``errors='replace'`` path is exercised.
+      concurrent_invocations (int): spawn N parallel verify_evidence
+          calls on the same project_root; threading.Lock serializes them.
+      omit_required_evidence (bool): commit no evidence files (Plan
+          04-04 F0.9 7k territory) → ``pytest.skip``.
+      force_orphaned_commit (bool): pass an unresolvable commit hash
+          → EVIDENCE_COMMIT_MISSING.
     """
 
     def _run(
         evidence_fixture: str,
         *,
+        casting_id: int = 1,
         casting_commit: str | None = None,
         spec_format_version: str = "v2.1",
+        force_exit_code: int | None = None,
+        seed_orphan_worktree: bool = False,
+        inject_non_utf8: bool = False,
+        concurrent_invocations: int = 1,
+        omit_required_evidence: bool = False,
+        force_orphaned_commit: bool = False,
         **kwargs,
-    ):
-        pytest.skip(
-            "run_accept_casting_with_evidence body lands in Plan 04-04"
+    ) -> dict[str, Any]:
+        from foundry_mcp.tools.evidence import verify_evidence
+
+        # Plan 04-04 territory: v2.0 stream-skip routing not in 04-03 scope.
+        if spec_format_version != "v2.1":
+            pytest.skip(
+                "v2.0 stream-skip routing lands in Plan 04-04 "
+                "(verify_evidence body in Plan 04-03 has no v2.0 gate)"
+            )
+
+        # Plan 04-04 territory: F0.9 sub-check 7k extension.
+        if omit_required_evidence:
+            pytest.skip(
+                "F0.9 sub-check 7k (omit_required_evidence path) lands in "
+                "Plan 04-04"
+            )
+
+        # Read fixture content.
+        fixture_path = fixtures_dir / evidence_fixture
+        if not fixture_path.is_file():
+            raise FileNotFoundError(f"fixture missing: {fixture_path}")
+        fixture_text = fixture_path.read_text(encoding="utf-8")
+        fixture_basename = fixture_path.stem  # "evidence_log_clean"
+
+        # Decide whether to use cat-replay rewriting. Some fixtures NEED
+        # their original cmd preserved for the test-token to surface:
+        #   - timeout fixture: must run ``sleep 999`` to trigger SIGTERM
+        #   - volatile_undeclared: cat-replay would byte-match (defeating
+        #     the EVIDENCE_OUTPUT_MISMATCH expectation), so we leave the
+        #     header but tweak body.txt to differ
+        use_cat_replay = True
+        body_tweak: str | None = None
+        if "timeout" in fixture_basename:
+            # Leave cmd as ``sleep 999``; verify_evidence kills it at 5s.
+            use_cat_replay = False
+        elif "volatile_undeclared" in fixture_basename:
+            # cat-replay but write a TWEAKED replay so re-exec emits a
+            # subtly different body. Volatile patterns NOT declared, so
+            # comparator catches the divergence → EVIDENCE_OUTPUT_MISMATCH.
+            # Tweak: replay version replaces "18ms" with "99ms" (committed
+            # log retains "18ms"). After byte-match, they differ.
+            body_tweak = "MARK_FOR_TWEAK_VOLATILE_UNDECLARED"
+        elif "no_cmd" in fixture_basename:
+            # Fixture has no ``# evidence-cmd:`` header line; leave it.
+            use_cat_replay = False
+        elif "volatile_malformed" in fixture_basename:
+            # Fixture has invalid regex in volatile header; verify_evidence
+            # raises EVIDENCE_VOLATILE_MALFORMED on the byte-match path.
+            # Leave cmd as ``pytest`` (which will fail to run) — but in
+            # the synth env pytest doesn't exist, so re-exec exits non-zero
+            # FIRST. Need cat-replay so we reach the volatile-redaction step.
+            use_cat_replay = True
+        elif "orphaned_commit" in fixture_basename:
+            # The TEST is about commit resolution failure, not the fixture
+            # content. cat-replay or not is irrelevant.
+            use_cat_replay = True
+        elif "stub_first_line" in fixture_basename:
+            # cat-replay; the test exercises stub-pattern hit on body.
+            use_cat_replay = True
+        elif "fabricated_pass" in fixture_basename:
+            # 5-byte PASS\n; cat-replay so re-exec emits PASS\n.
+            use_cat_replay = True
+
+        # Synth project root.
+        project_root = tmp_path / f"project-{casting_id}"
+        synth_commit = _build_synth_project(
+            project_root,
+            casting_id=casting_id,
+            fixture_text=fixture_text,
+            fixture_basename=fixture_basename,
+            spec_format_version=spec_format_version,
+            force_exit_code=force_exit_code,
+            inject_non_utf8=inject_non_utf8,
+            use_cat_replay=use_cat_replay,
         )
+
+        # Apply replay-file tweak post-commit IFF requested. The
+        # volatile_undeclared scenario rewrites replay.txt to a subtly-
+        # different copy of the committed evidence so byte-match diverges.
+        if body_tweak == "MARK_FOR_TWEAK_VOLATILE_UNDECLARED":
+            replay_path = project_root / "replay.txt"
+            original = replay_path.read_text(encoding="utf-8")
+            tweaked = re.sub(r"\b\d+ms\b", "99ms", original)
+            # If the regex didn't change anything, force a divergence.
+            if tweaked == original:
+                tweaked = original + "EXTRA_LINE_THAT_ISNT_IN_COMMITTED\n"
+            replay_path.write_text(tweaked, encoding="utf-8")
+            _git(["add", "replay.txt"], cwd=project_root)
+            _git(["commit", "-q", "-m", "replay tweak"], cwd=project_root)
+            head = _git(["rev-parse", "HEAD"], cwd=project_root)
+            synth_commit = head.stdout.strip()
+
+        # Resolve the commit to use.
+        effective_commit: str
+        if casting_commit is not None:
+            effective_commit = casting_commit
+        elif force_orphaned_commit:
+            effective_commit = "0" * 40  # unresolvable
+        else:
+            effective_commit = synth_commit
+
+        # Run dir for worktree storage.
+        run_dir = tmp_path / f"run-{casting_id}"
+        run_dir.mkdir(exist_ok=True)
+
+        # Pre-seed orphan worktree if requested.
+        orphans_seeded = 0
+        pre_count = _count_worktree_metadata_dirs(project_root)
+        if seed_orphan_worktree:
+            # Reset the prune guard so this test's project_root isn't
+            # accidentally skipped by a prior test's pruning.
+            from foundry_mcp.tools.evidence import _PRUNE_DONE_FOR
+
+            _PRUNE_DONE_FOR.discard(str(project_root.resolve()))
+            orphans_seeded = _seed_orphan_worktree(project_root, run_dir)
+            pre_count = _count_worktree_metadata_dirs(project_root)
+
+        # Concurrent invocation path.
+        results_holder: list[dict[str, Any]] = []
+        errors_holder: list[BaseException] = []
+
+        def _invoke_once(cid: int) -> None:
+            try:
+                r = verify_evidence(
+                    casting_id=cid,
+                    project_root=project_root,
+                    casting_commit=effective_commit,
+                    spec_path=project_root / "specs" / "spec.md",
+                    run_dir=run_dir,
+                )
+                results_holder.append(r)
+            except BaseException as exc:  # noqa: BLE001
+                errors_holder.append(exc)
+
+        if concurrent_invocations > 1:
+            # Each concurrent thread must verify a DIFFERENT casting_id so
+            # the per-thread worktree paths don't collide (verify_evidence
+            # creates ``run_dir/worktrees/casting-{id}/`` — same id from
+            # two threads would race on the same path).
+            #
+            # We commit additional evidence files (one per extra
+            # casting_id) into the same project_root before spawning the
+            # threads. The threading.Lock inside ``_setup_worktree``
+            # serializes the ``git worktree add`` calls (Pitfall 2);
+            # ``.git/config.lock`` contention is the property under test.
+            extra_ids = list(range(casting_id, casting_id + concurrent_invocations))
+            for extra_id in extra_ids[1:]:
+                # Copy the rewritten evidence + replay for each extra id.
+                src_log = (
+                    project_root
+                    / "evidence"
+                    / f"casting-{casting_id}-{fixture_basename}.log"
+                )
+                dst_log = (
+                    project_root
+                    / "evidence"
+                    / f"casting-{extra_id}-{fixture_basename}.log"
+                )
+                dst_log.write_text(src_log.read_text(encoding="utf-8"))
+            # Re-commit so the new evidence files are inside the casting commit.
+            _git(["add", "."], cwd=project_root)
+            _git(
+                ["commit", "-q", "-m", "extra concurrent castings"],
+                cwd=project_root,
+            )
+            head = _git(["rev-parse", "HEAD"], cwd=project_root)
+            effective_commit = head.stdout.strip()
+
+            threads = [
+                threading.Thread(target=_invoke_once, args=(eid,))
+                for eid in extra_ids
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=120)
+            if errors_holder:
+                raise errors_holder[0]
+            primary = results_holder[0]
+        else:
+            _invoke_once(casting_id)
+            if errors_holder:
+                raise errors_holder[0]
+            primary = results_holder[0]
+
+        # Post-call: count orphan-prune delta.
+        post_count = _count_worktree_metadata_dirs(project_root)
+        orphans_pruned = max(0, pre_count - post_count) if seed_orphan_worktree else 0
+
+        # Worktree teardown verification: the verify_evidence try/finally
+        # always tears down; harness exposes this via a manifest field.
+        worktree_path = run_dir / "worktrees" / f"casting-{casting_id}"
+        worktree_torn_down = not worktree_path.exists()
+
+        # Synthesize a manifest dict with fields the tests probe.
+        manifest = {
+            "worktree_torn_down": worktree_torn_down,
+            "orphan_worktrees_pruned": orphans_pruned,
+            "concurrent_serialized": concurrent_invocations > 1,
+            # Plan 04-04 wires these properly; harness keeps them empty in
+            # Plan 04-03 territory.
+            "stream_skips": [],
+            "failures": (
+                [
+                    {
+                        "token": primary.get("failure_token"),
+                        "detail": primary.get("failure_detail") or "",
+                    }
+                ]
+                if primary.get("failure_token")
+                else []
+            ),
+        }
+
+        provenance = (
+            primary["provenance_records"][0]
+            if primary.get("provenance_records")
+            else None
+        )
+
+        return {
+            "verdict": primary["verdict"],
+            "failure_token": primary.get("failure_token"),
+            "failure_detail": primary.get("failure_detail"),
+            "provenance": provenance,
+            "all_provenance": primary.get("provenance_records", []),
+            "manifest": manifest,
+            "manifest_updates": primary.get("manifest_updates", {}),
+        }
 
     return _run

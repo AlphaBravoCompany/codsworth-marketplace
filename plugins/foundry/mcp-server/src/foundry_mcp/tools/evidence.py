@@ -28,8 +28,11 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from foundry_mcp.tools.foundry_handoff import _hash_str
 
 # ---------------------------------------------------------------------------
 # Closed-vocabulary failure-token allowlist (Phase 1/2/3 discipline mirror).
@@ -668,8 +671,244 @@ def _check_stub_patterns(log_text: str, evidence_cmd: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Top-level entry point (Plan 04-02 STUB; Plan 04-03 body; Plan 04-04 wired
-# into foundry_accept_casting).
+# Provenance record builder (Plan 04-03 — 13-field schema per CONTEXT.md).
+#
+# Closed-schema discipline: every provenance record has exactly these 13
+# fields. ``test_provenance_record_has_required_fields`` enforces the
+# schema via ``frozenset.issubset`` (Plan 04-04 territory but works in
+# Plan 04-03 since the record shape lives in ``_make_provenance_record``).
+# ---------------------------------------------------------------------------
+def _make_provenance_record(
+    *,
+    evidence_path: Path,
+    evidence_cmd: str | None,
+    casting_commit: str,
+    log_text: str,
+    captured_text: str,
+    redacted_log: str,
+    redacted_captured: str,
+    exit_code: int | None,
+    elapsed_seconds: float,
+    verdict: str,
+    failure_token: str | None,
+    failure_detail: str | None,
+) -> dict[str, Any]:
+    """Build a single 13-field provenance record (CONTEXT.md schema).
+
+    Fields:
+        evidence_path, evidence_cmd, casting_commit, log_sha256,
+        captured_sha256, redacted_log_sha256, redacted_captured_sha256,
+        server_mtime, exit_code, elapsed_seconds, env_keys_present,
+        verdict, failure_token. (failure_detail included as 14th
+        soft-companion to failure_token; tests only require the 13 above.)
+
+    ``env_keys_present`` carries the SORTED list of env-var NAMES present
+    at re-exec time (NEVER values — abuse trail per CONTEXT.md). The
+    redacted_* SHA256s let auditors verify the comparator decision after
+    the fact without re-deriving regex application.
+    """
+    rel_path: str
+    try:
+        # If evidence is under a worktree at run_dir/worktrees/casting-N/
+        # evidence/casting-N-name.log, return "evidence/casting-N-name.log".
+        rel_path = str(evidence_path.relative_to(evidence_path.parents[1]))
+    except (ValueError, IndexError):
+        rel_path = str(evidence_path)
+    env_keys = sorted(os.environ.keys())
+    return {
+        "evidence_path": rel_path,
+        "evidence_cmd": evidence_cmd,
+        "casting_commit": casting_commit,
+        "log_sha256": _hash_str(log_text),
+        "captured_sha256": _hash_str(captured_text),
+        "redacted_log_sha256": _hash_str(redacted_log),
+        "redacted_captured_sha256": _hash_str(redacted_captured),
+        "server_mtime": datetime.now(tz=timezone.utc).isoformat(timespec="seconds"),
+        "exit_code": exit_code,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "env_keys_present": env_keys,
+        "verdict": verdict,
+        "failure_token": failure_token,
+        "failure_detail": failure_detail,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-evidence-file verifier (Plan 04-03).
+#
+# Decomposed from ``verify_evidence`` so the iteration loop stays readable.
+# Each evidence file goes through:
+#
+#   parse header → run cmd → compare → check stub patterns → produce record
+#
+# Failures short-circuit: header parse failure → no re-exec; non-zero exit →
+# no comparison (would always mismatch on error output anyway); timeout →
+# returns -1 from the executor.
+# ---------------------------------------------------------------------------
+def _verify_one_evidence_file(
+    evidence_path: Path,
+    worktree_path: Path,
+    casting_commit: str,
+) -> dict[str, Any]:
+    """Verify a single evidence file. Returns one provenance record."""
+    log_text = evidence_path.read_text(encoding="utf-8", errors="replace")
+
+    # Step 1: Parse header.
+    try:
+        header = _parse_evidence_header(log_text)
+    except ValueError as exc:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=None,
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text="",
+            redacted_log="",
+            redacted_captured="",
+            exit_code=None,
+            elapsed_seconds=0.0,
+            verdict="rejected",
+            failure_token="EVIDENCE_VOLATILE_MALFORMED",
+            failure_detail=str(exc),
+        )
+
+    # Step 2: Cmd presence is mandatory.
+    if header.get("cmd") is None:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=None,
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text="",
+            redacted_log="",
+            redacted_captured="",
+            exit_code=None,
+            elapsed_seconds=0.0,
+            verdict="rejected",
+            failure_token="EVIDENCE_COMMAND_MISSING",
+            failure_detail=f"no `# evidence-cmd:` header in {evidence_path.name}",
+        )
+
+    timeout = header.get("timeout") or EVIDENCE_TIMEOUT_DEFAULT_SECONDS
+
+    # Step 3: Re-execute.
+    exit_code, captured, elapsed = _run_command_with_timeout(
+        cmd=header["cmd"], cwd=worktree_path, timeout=timeout,
+    )
+
+    # Step 4a: Timeout (-1) → EVIDENCE_TIMEOUT.
+    if exit_code == -1:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=header["cmd"],
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text=captured,
+            redacted_log="",
+            redacted_captured="",
+            exit_code=exit_code,
+            elapsed_seconds=elapsed,
+            verdict="rejected",
+            failure_token="EVIDENCE_TIMEOUT",
+            failure_detail=(
+                f"command exceeded {timeout}s; killed via SIGTERM/SIGKILL"
+            ),
+        )
+
+    # Step 4b: Non-zero exit → EVIDENCE_EXIT_NONZERO.
+    if exit_code != 0:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=header["cmd"],
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text=captured,
+            redacted_log="",
+            redacted_captured="",
+            exit_code=exit_code,
+            elapsed_seconds=elapsed,
+            verdict="rejected",
+            failure_token="EVIDENCE_EXIT_NONZERO",
+            failure_detail=f"command exited with code {exit_code}",
+        )
+
+    # Step 5: Byte-match comparison (volatile redaction applied to both).
+    try:
+        matched, diff, redacted_log, redacted_captured = _compare_byte_match(
+            committed=log_text,
+            captured=captured,
+            volatile_patterns=header.get("volatile", []),
+        )
+    except ValueError as exc:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=header["cmd"],
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text=captured,
+            redacted_log="",
+            redacted_captured="",
+            exit_code=exit_code,
+            elapsed_seconds=elapsed,
+            verdict="rejected",
+            failure_token="EVIDENCE_VOLATILE_MALFORMED",
+            failure_detail=str(exc),
+        )
+
+    if not matched:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=header["cmd"],
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text=captured,
+            redacted_log=redacted_log,
+            redacted_captured=redacted_captured,
+            exit_code=exit_code,
+            elapsed_seconds=elapsed,
+            verdict="rejected",
+            failure_token="EVIDENCE_OUTPUT_MISMATCH",
+            failure_detail=diff,
+        )
+
+    # Step 6: Stub patterns fire ON TOP of byte-match (CONTEXT.md locked).
+    stub_token = _check_stub_patterns(log_text, header["cmd"])
+    if stub_token:
+        return _make_provenance_record(
+            evidence_path=evidence_path,
+            evidence_cmd=header["cmd"],
+            casting_commit=casting_commit,
+            log_text=log_text,
+            captured_text=captured,
+            redacted_log=redacted_log,
+            redacted_captured=redacted_captured,
+            exit_code=exit_code,
+            elapsed_seconds=elapsed,
+            verdict="rejected",
+            failure_token="EVIDENCE_STUB_DETECTED",
+            failure_detail=f"{stub_token}: stub-pattern hit on committed log",
+        )
+
+    # Accepted.
+    return _make_provenance_record(
+        evidence_path=evidence_path,
+        evidence_cmd=header["cmd"],
+        casting_commit=casting_commit,
+        log_text=log_text,
+        captured_text=captured,
+        redacted_log=redacted_log,
+        redacted_captured=redacted_captured,
+        exit_code=exit_code,
+        elapsed_seconds=elapsed,
+        verdict="accepted",
+        failure_token=None,
+        failure_detail=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level entry point (Plan 04-03 body; Plan 04-04 wired into
+# foundry_accept_casting + adds v2.0 stream-skip routing + manifest writes).
 # ---------------------------------------------------------------------------
 def verify_evidence(
     casting_id: int | str,
@@ -677,40 +916,123 @@ def verify_evidence(
     casting_commit: str,
     *,
     spec_path: Path | None = None,
+    run_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Top-level Phase 4 evidence verification entry point.
 
-    Plan 04-02 (now): NotImplementedError stub. The signature is locked so
-    ``foundry_accept_casting`` (Plan 04-04) can import and call without
-    import errors during incremental wiring.
+    Plan 04-03 ships the worktree + subprocess + redaction + comparator
+    + stub-pattern wiring. Plan 04-04 wraps with v2.0 stream-skip routing
+    and manifest persistence.
 
-    Plan 04-03 (next wave): worktree + subprocess + redaction + comparator
-    + stub-pattern library bodies. Returns the v2.1+ verdict + provenance.
-
-    Plan 04-04 (final wave): wire into ``foundry_accept_casting`` AFTER
-    req-ID-citation check, BEFORE scope-flag check. v2.0 spec routing
-    through ``manifest.stream_skips`` (using
-    ``MIN_SPEC_FORMAT_VERSION_FOR_EVID_01`` gate).
+    Discovers ``evidence/casting-{id}-*.log`` in the casting commit's
+    worktree, parses each, re-executes, redacts, compares, runs stub
+    patterns, returns provenance records. ``try/finally`` guarantees
+    worktree teardown on success AND failure paths.
 
     Args:
         casting_id: casting identifier (int or str — manifest stores as str).
-        project_root: repo root containing ``.git`` and
-            ``castings/manifest.json``.
-        casting_commit: full SHA of the casting's commit (for
-            ``git worktree add``).
-        spec_path: optional explicit spec.md path; defaults to
-            ``project_root / 'specs' / 'spec.md'`` (per Foundry layout).
+        project_root: repo root containing ``.git`` and the casting commit.
+        casting_commit: full SHA of the casting's commit (rev-parseable).
+        spec_path: optional explicit spec.md path; reserved for Plan 04-04
+            spec_format_version routing — not consumed in Plan 04-03.
+        run_dir: parent directory under which the worktree is created at
+            ``run_dir / 'worktrees' / 'casting-{id}'``. REQUIRED in Plan
+            04-03; Plan 04-04 derives it via ``foundry_state.get_run_dir``
+            when absent.
 
     Returns:
         ``{
             'verdict': 'accepted' | 'rejected' | 'skipped',
-            'failure_token': str | None,  # member of KNOWN_EVIDENCE_FAILURE_TOKENS
+            'failure_token': str | None,
             'failure_detail': str | None,
-            'provenance_records': list[dict],  # one per evidence file
-            'manifest_updates': dict,  # stream_skips additions, etc.
+            'provenance_records': list[dict],
+            'manifest_updates': dict,
         }``
+
+    The ``manifest_updates`` dict is empty in Plan 04-03; Plan 04-04
+    populates ``stream_skips`` on the v2.0 path and other manifest fields.
     """
-    raise NotImplementedError(
-        "verify_evidence body lands in Plan 04-03 (logic) "
-        "+ Plan 04-04 (foundry_accept_casting integration)"
-    )
+    if run_dir is None:
+        raise ValueError(
+            "run_dir required in Plan 04-03; Plan 04-04 derives via "
+            "foundry_state.get_run_dir when absent"
+        )
+
+    # Pitfall 1: clean up orphaned worktrees from prior crashes (idempotent
+    # via _PRUNE_DONE_FOR module-level guard — once per session).
+    _prune_orphaned_worktrees(project_root)
+
+    provenance_records: list[dict[str, Any]] = []
+    overall_verdict = "accepted"
+    overall_token: str | None = None
+    overall_detail: str | None = None
+
+    worktree_path: Path | None = None
+    try:
+        try:
+            worktree_path = _setup_worktree(
+                project_root, casting_id, casting_commit, run_dir
+            )
+        except RuntimeError as exc:
+            return {
+                "verdict": "rejected",
+                "failure_token": "EVIDENCE_COMMIT_MISSING",
+                "failure_detail": str(exc),
+                "provenance_records": [],
+                "manifest_updates": {},
+            }
+
+        # Discover evidence files under the casting commit's worktree.
+        evidence_dir = worktree_path / "evidence"
+        if evidence_dir.exists():
+            evidence_files = sorted(
+                evidence_dir.glob(f"casting-{casting_id}-*.log")
+            )
+        else:
+            evidence_files = []
+
+        if not evidence_files:
+            # Plan 04-04 wraps this with v2.0 stream-skip routing — on
+            # v2.0 specs, empty evidence is acceptable (skipped, not
+            # rejected). Plan 04-03 ships the rejection path; Plan 04-04
+            # wraps the v2.0 skip via its harness/integration layer.
+            return {
+                "verdict": "rejected",
+                "failure_token": "EVIDENCE_COMMAND_MISSING",
+                "failure_detail": (
+                    f"casting {casting_id} committed no evidence files "
+                    f"(expected evidence/casting-{casting_id}-*.log)"
+                ),
+                "provenance_records": [],
+                "manifest_updates": {},
+            }
+
+        # Verify each evidence file in turn.
+        for ef_path in evidence_files:
+            record = _verify_one_evidence_file(
+                evidence_path=ef_path,
+                worktree_path=worktree_path,
+                casting_commit=casting_commit,
+            )
+            provenance_records.append(record)
+            if (
+                record["verdict"] == "rejected"
+                and overall_verdict == "accepted"
+            ):
+                overall_verdict = "rejected"
+                overall_token = record["failure_token"]
+                overall_detail = record["failure_detail"]
+
+    finally:
+        # Pitfall 1: teardown ALWAYS runs — accepted, rejected, or
+        # exception (try/finally guarantees the cleanup path).
+        if worktree_path is not None and worktree_path.exists():
+            _teardown_worktree(project_root, worktree_path)
+
+    return {
+        "verdict": overall_verdict,
+        "failure_token": overall_token,
+        "failure_detail": overall_detail,
+        "provenance_records": provenance_records,
+        "manifest_updates": {},
+    }
