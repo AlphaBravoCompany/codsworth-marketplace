@@ -138,9 +138,6 @@ def test_provenance_record_has_evidence_for_field(run_accept_casting_with_eviden
     enforced via ``test_provenance_record_has_required_fields`` analog
     landing in Plan 05-03.
     """
-    pytest.skip(
-        "Plan 05-03 territory — verify_evidence not yet wired for evidence_for"
-    )
     result = run_accept_casting_with_evidence(
         "evidence/evidence_log_for_clean.log",
         spec_format_version="v2.1",
