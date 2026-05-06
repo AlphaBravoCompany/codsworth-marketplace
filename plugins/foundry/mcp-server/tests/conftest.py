@@ -82,6 +82,63 @@ def load_fixture(fixtures_dir: Path) -> Callable[[str], str]:
 _HEADER_CMD_RE = re.compile(r"^# evidence-cmd:\s*(.+)$", re.MULTILINE)
 _HEADER_BLOCK_RE = re.compile(r"\A(?:#[^\n]*\n|[ \t]*\n)+")
 
+# Phase 5 / Plan 05-01 — ``# evidence-for:`` directive matcher. Used by
+# ``_apply_evidence_for_directive`` (below) to override or strip the for-line
+# at synth-time per harness kwargs. Parser-side recognition lands in Plan
+# 05-02 (extends ``_KNOWN_HEADER_DIRECTIVES`` with ``"for"``). The harness's
+# rewrite layer is independent of the parser allowlist so Plans 05-01/02 can
+# land in either order.
+_HEADER_FOR_RE = re.compile(r"^# evidence-for:\s*(.+)$", re.MULTILINE)
+
+
+def _apply_evidence_for_directive(
+    evidence_text: str,
+    *,
+    evidence_for_value: str | None,
+    omit_evidence_for_header: bool,
+) -> str:
+    """Return evidence_text with the ``# evidence-for:`` line rewritten.
+
+    Phase 5 / Plan 05-01 helper. Three branches in priority order:
+
+      1. ``omit_evidence_for_header=True`` — strip any ``# evidence-for:``
+         line from the header block. Drives EVIDENCE_REQUIREMENT_UNBOUND
+         once Plan 05-03 lands the gate.
+      2. ``evidence_for_value`` is not None — replace any existing for-line
+         with ``# evidence-for: {evidence_for_value}``. If no for-line
+         exists, insert one immediately after the ``# evidence-cmd:`` line.
+      3. Both at defaults — return ``evidence_text`` unchanged.
+
+    The rewrite operates on the fixture text BEFORE it lands in the synth
+    repo, so ``_rewrite_evidence_for_scenario`` (which rewrites the
+    ``# evidence-cmd:`` line for cat-replay) can run after this transform
+    without colliding.
+    """
+    if omit_evidence_for_header:
+        # Strip the for-line entirely; leave a blank line if nothing else
+        # remains in the header so the header→body split stays predictable.
+        return _HEADER_FOR_RE.sub("", evidence_text, count=1).replace(
+            "\n\n\n", "\n\n", 1
+        )
+    if evidence_for_value is not None:
+        replacement = f"# evidence-for: {evidence_for_value}"
+        if _HEADER_FOR_RE.search(evidence_text):
+            return _HEADER_FOR_RE.sub(
+                lambda _m: replacement, evidence_text, count=1
+            )
+        # No existing for-line — insert one immediately after evidence-cmd.
+        cmd_match = _HEADER_CMD_RE.search(evidence_text)
+        if cmd_match is None:
+            # Fixture has no cmd line either; prepend the for-line at top.
+            return f"{replacement}\n{evidence_text}"
+        insert_at = cmd_match.end()
+        return (
+            evidence_text[:insert_at]
+            + f"\n{replacement}"
+            + evidence_text[insert_at:]
+        )
+    return evidence_text
+
 
 def _split_header_and_body(evidence_text: str) -> tuple[str, str]:
     """Split evidence text into (header_block, body)."""
@@ -186,6 +243,11 @@ def _build_synth_project(
     inject_non_utf8: bool = False,
     use_cat_replay: bool = True,
     omit_required_evidence: bool = False,
+    evidence_for_value: str | None = None,
+    omit_evidence_for_header: bool = False,
+    extra_evidence_fixtures: tuple[str, ...] = (),
+    extra_evidence_texts: tuple[str, ...] = (),
+    casting_req_ids_override: list[str] | None = None,
 ) -> str:
     """Build the synth project, return casting_commit SHA.
 
@@ -217,6 +279,35 @@ def _build_synth_project(
         encoding="utf-8",
     )
 
+    # Plan 05-01: synthesize casting prompt with <spec_requirements> block.
+    # Phase 4's harness did not emit one (Phase 4's verify_evidence does not
+    # consume it). Plan 05-03 will read the block via foundry_handoff.py's
+    # req_id_pattern regex. We write a minimal block here so Plans 05-02/03
+    # can opt in via casting_req_ids_override, and so default callers get a
+    # deterministic two-ID set ([US-1, FR-2]) matching evidence_log_clean.log.
+    #
+    # When ``casting_req_ids_override`` is None, the default set is
+    # ["US-1", "FR-2"] — which exactly matches evidence_log_clean.log's
+    # for-line. Phase 4 callers (test_evidence.py) ignore this file entirely.
+    req_ids_for_prompt = (
+        list(casting_req_ids_override)
+        if casting_req_ids_override is not None
+        else ["US-1", "FR-2"]
+    )
+    casting_prompt_path = (
+        project_root / "castings" / f"casting-{casting_id}.prompt.md"
+    )
+    spec_req_lines = "\n".join(
+        f"- {rid}: synthesized requirement for testing"
+        for rid in req_ids_for_prompt
+    )
+    casting_prompt_path.write_text(
+        "<spec_requirements>\n"
+        f"{spec_req_lines}\n"
+        "</spec_requirements>\n",
+        encoding="utf-8",
+    )
+
     if not omit_required_evidence:
         # evidence/casting-N-name.log lives in evidence/ so verify_evidence's
         # ``evidence_dir.glob('casting-{id}-*.log')`` finds it. The replay
@@ -224,8 +315,16 @@ def _build_synth_project(
         # works with cmd's cwd = worktree root.
         evidence_dir = project_root / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
-        rewritten, replay_text = _rewrite_evidence_for_scenario(
+
+        # Plan 05-01: apply ``# evidence-for:`` directive rewriting BEFORE
+        # the cat-replay rewrite so both transforms compose cleanly.
+        primary_text = _apply_evidence_for_directive(
             fixture_text,
+            evidence_for_value=evidence_for_value,
+            omit_evidence_for_header=omit_evidence_for_header,
+        )
+        rewritten, replay_text = _rewrite_evidence_for_scenario(
+            primary_text,
             force_exit_code=force_exit_code,
             inject_non_utf8=inject_non_utf8,
             use_cat_replay=use_cat_replay,
@@ -235,6 +334,37 @@ def _build_synth_project(
         if replay_text:
             replay_path = project_root / "replay.txt"
             replay_path.write_text(replay_text, encoding="utf-8")
+
+        # Plan 05-01: extra evidence fixtures — copy each into evidence/
+        # under deterministic ``casting-{id}-extra-{idx}.log`` naming.
+        # Each extra goes through the same cat-replay pipeline as the
+        # primary; the replay files use ``replay-extra-{idx}.txt`` so they
+        # don't collide with the primary's ``replay.txt``. Multi-fixture
+        # scenarios use distinct fixtures per casting; the primary's
+        # ``cat replay.txt`` and each extra's ``cat replay-extra-N.txt``
+        # all byte-match independently.
+        for idx, extra_text in enumerate(extra_evidence_texts, start=1):
+            extra_replay_name = f"replay-extra-{idx}.txt"
+            extra_after_for = _apply_evidence_for_directive(
+                extra_text,
+                evidence_for_value=None,  # extras keep their native for-line
+                omit_evidence_for_header=False,
+            )
+            extra_rewritten, extra_replay_text = _rewrite_evidence_for_scenario(
+                extra_after_for,
+                force_exit_code=None,
+                inject_non_utf8=False,
+                use_cat_replay=True,
+                replay_file_name=extra_replay_name,
+            )
+            extra_log_path = (
+                evidence_dir / f"casting-{casting_id}-extra-{idx}.log"
+            )
+            extra_log_path.write_text(extra_rewritten, encoding="utf-8")
+            if extra_replay_text:
+                (project_root / extra_replay_name).write_text(
+                    extra_replay_text, encoding="utf-8"
+                )
 
     # git init + commit
     _git(["init", "-q", "."], cwd=project_root)
@@ -335,6 +465,12 @@ def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
         concurrent_invocations: int = 1,
         omit_required_evidence: bool = False,
         force_orphaned_commit: bool = False,
+        # Plan 05-01 — Phase 5 / EVID-02 evidence-for kwargs (locked here;
+        # Plans 05-02/03 consume them).
+        evidence_for_value: str | None = None,
+        omit_evidence_for_header: bool = False,
+        extra_evidence_fixtures: tuple[str, ...] = (),
+        casting_req_ids_override: list[str] | None = None,
         **kwargs,
     ) -> dict[str, Any]:
         from foundry_mcp.tools.evidence import verify_evidence
@@ -348,6 +484,26 @@ def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
             raise FileNotFoundError(f"fixture missing: {fixture_path}")
         fixture_text = fixture_path.read_text(encoding="utf-8")
         fixture_basename = fixture_path.stem  # "evidence_log_clean"
+
+        # Plan 05-01 — resolve extra fixture names to texts. Names accept
+        # both bare basenames ("evidence_log_for_overlap_b.log") and
+        # subdirectory-prefixed paths ("evidence/evidence_log_for_overlap_b.log").
+        # Mirrors the load_fixture helper's lookup logic.
+        extra_evidence_texts: list[str] = []
+        for extra_name in extra_evidence_fixtures:
+            extra_path = fixtures_dir / extra_name
+            if not extra_path.is_file():
+                # Fall back to evidence/ subdirectory so callers can pass a
+                # bare basename (matches the primary fixture lookup pattern
+                # used by test_evidence.py: "evidence/evidence_log_clean.log").
+                extra_path = fixtures_dir / "evidence" / extra_name
+            if not extra_path.is_file():
+                raise FileNotFoundError(
+                    f"extra evidence fixture missing: {extra_name}"
+                )
+            extra_evidence_texts.append(
+                extra_path.read_text(encoding="utf-8")
+            )
 
         # Decide whether to use cat-replay rewriting. Some fixtures NEED
         # their original cmd preserved for the test-token to surface:
@@ -400,6 +556,12 @@ def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
             inject_non_utf8=inject_non_utf8,
             use_cat_replay=use_cat_replay,
             omit_required_evidence=omit_required_evidence,
+            # Plan 05-01 — Phase 5 evidence-for kwargs threaded through.
+            evidence_for_value=evidence_for_value,
+            omit_evidence_for_header=omit_evidence_for_header,
+            extra_evidence_fixtures=extra_evidence_fixtures,
+            extra_evidence_texts=tuple(extra_evidence_texts),
+            casting_req_ids_override=casting_req_ids_override,
         )
 
         # Apply replay-file tweak post-commit IFF requested. The
