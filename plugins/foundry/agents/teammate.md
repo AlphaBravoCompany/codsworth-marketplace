@@ -325,6 +325,92 @@ Update the task status via TaskUpdate:
 
     Every ID. No exceptions. If a requirement spans multiple files, cite all of them. If a requirement is "verified by test," cite the test file:line. If you did not implement a requirement in your slice, say so explicitly and explain why — the lead will treat that as a scope-flag and re-dispatch.
 
+  - **Evidence Files (required when `<spec_requirements>` is non-empty).**
+    For every behavior change your task introduces, capture the demonstrating
+    command's output to `evidence/casting-{id}-<descriptor>.log` BEFORE
+    committing. The file must carry header lines at the top documenting
+    what command produces this output, which requirement IDs it
+    demonstrates, which output fields are volatile, and an optional
+    timeout:
+
+    ```
+    # evidence-cmd: <shell command that demonstrates the behavior>
+    # evidence-for: US-N, FR-M, AC-K
+    # evidence-volatile: <regex>          (optional, zero or more lines)
+    # evidence-timeout: <seconds>         (optional, default 120s)
+
+    <body — exact stdout+stderr from running `# evidence-cmd:`>
+    ```
+
+    The lead runs `Foundry-Accept-Casting` which:
+      - re-executes `# evidence-cmd:` server-side at your casting's commit
+        in an isolated worktree and rejects on byte-mismatch (after
+        declared volatile redaction);
+      - rejects with `EVIDENCE_REQUIREMENT_UNBOUND` when your casting's
+        `<spec_requirements>` block cites requirement IDs that no
+        committed evidence file's `# evidence-for:` header binds to;
+      - names the specific missing requirement IDs in the rejection
+        message so your next iteration knows which behavior to capture.
+
+    **Many-to-many bindings are allowed:**
+      - One evidence file MAY bind to multiple requirements (comma-separated
+        list in `# evidence-for:`).
+      - One requirement MAY have multiple evidence files (the gate accepts
+        as long as ≥1 file binds to it).
+      - The same artifact MAY appear under multiple casting commits
+        (each casting carries its own evidence + binding pass).
+
+    **Refactor / docs-only castings need no evidence files.** When your
+    casting's `<spec_requirements>` block contains zero requirement IDs,
+    the gate skips evidence verification entirely. When it contains
+    ≥1 ID, you MUST commit ≥1 evidence file with a `# evidence-for:`
+    header that, combined across all evidence files, covers every cited
+    ID.
+
+    **Volatile field redaction:** if your command's output contains
+    timestamps, durations, ports, PIDs, or other non-deterministic
+    fields that vary between runs, declare each as a regex on a
+    separate `# evidence-volatile:` line. The gate substitutes
+    matches with `<VOLATILE>` (or `<TIMING>` for timing-pattern
+    chains) before byte-comparison. Undeclared volatile fields in
+    your committed log will fail acceptance with
+    `EVIDENCE_OUTPUT_MISMATCH`. Common patterns:
+
+    ```
+    # evidence-volatile: \d+\.\d+s            (run duration)
+    # evidence-volatile: \b\d+ms\b              (latencies)
+    # evidence-volatile: pid=\d+                (process IDs)
+    # evidence-volatile: 20\d{2}-\d{2}-\d{2}T  (ISO timestamps)
+    ```
+
+    **Re-execution timeout:** the gate kills the re-executed command
+    at 120s by default; declare a longer ceiling via
+    `# evidence-timeout: 300` if your command genuinely needs more
+    (max ceiling enforced server-side; integration tests typically
+    fit under 60s).
+
+    **Header parsing notes:**
+      - The `# evidence-for:` value is parsed as a comma-separated list
+        via the same regex used to extract IDs from `<spec_requirements>`:
+        `\b(?:US|FR|NFR|AC|VC|IR|TR)-\d+(?:\.\d+)?\b`. Tokens that
+        don't match are silently dropped; if NO valid IDs are found,
+        the gate rejects with `EVIDENCE_FOR_MALFORMED`.
+      - Inline trailing comments are NOT honored — the line is parsed
+        as one value. If you need to explain a deferred requirement,
+        use a separate file or omit the ID entirely; do not write
+        `# evidence-for: US-1, # FR-2 deferred` (the gate will bind
+        BOTH `US-1` AND `FR-2`).
+      - Multiple `# evidence-for:` lines in the same file accumulate
+        (mirrors `# evidence-volatile:` multi-line discipline);
+        declared order preserved across the union.
+
+    Place the evidence file at `evidence/casting-{id}-<short-descriptor>.log`
+    (e.g., `evidence/casting-3-login-endpoint.log`,
+    `evidence/casting-3-login-tests.log`). The casting ID is the integer
+    from your assigned `<casting_id>{N}</casting_id>` tag; the descriptor
+    is a short slug describing what the file demonstrates. Files committed
+    elsewhere are not discovered by the gate.
+
 ### Step 12: Claim next task or go idle
 
 Check for available tasks. If there is another task assigned to you or unclaimed, claim it (set yourself as owner, status to `in_progress`) and loop back to Step 1. If there are no more tasks, go idle and wait for the Lead.
