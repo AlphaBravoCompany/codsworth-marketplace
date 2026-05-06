@@ -121,13 +121,20 @@ def test_volatile_order_is_respected():
 
 
 def test_failure_tokens_are_in_allowlist():
-    """KNOWN_EVIDENCE_FAILURE_TOKENS contains exactly the 8 tokens locked in CONTEXT.md.
+    """Phase 4's 8 tokens remain in ``KNOWN_EVIDENCE_FAILURE_TOKENS``.
 
     Closed-vocabulary discipline: any new token = code-edit forced. Mirrors
     Phase 1 ``VALID_IMPLICIT_FACT_CATEGORIES`` + Phase 3
     ``KNOWN_SPEC_FORMAT_VERSIONS``.
+
+    Phase 5 / EVID-02 (Plan 05-02) extends the tuple from 8 to 10 entries by
+    appending ``EVIDENCE_REQUIREMENT_UNBOUND`` + ``EVIDENCE_FOR_MALFORMED``
+    at the END (preserves Phase 4 token positions). This test asserts the
+    Phase 4 allowlist is a SUBSET of the live tuple — Phase-5+ extensions
+    are validated by the parallel ``test_failure_tokens_includes_unbound_and_malformed``
+    test in ``tests/test_evidence_for.py``.
     """
-    expected = frozenset(
+    phase_4_tokens = frozenset(
         {
             "EVIDENCE_COMMAND_MISSING",
             "EVIDENCE_TIMEOUT",
@@ -140,7 +147,11 @@ def test_failure_tokens_are_in_allowlist():
         }
     )
     actual = frozenset(evidence.KNOWN_EVIDENCE_FAILURE_TOKENS)
-    assert actual == expected, f"token allowlist drift: {actual ^ expected}"
+    missing_phase_4 = phase_4_tokens - actual
+    assert not missing_phase_4, (
+        f"Phase 4 token allowlist regression — these Phase 4 tokens disappeared "
+        f"from KNOWN_EVIDENCE_FAILURE_TOKENS: {sorted(missing_phase_4)}"
+    )
 
 
 # ---------------------------------------------------------------------------

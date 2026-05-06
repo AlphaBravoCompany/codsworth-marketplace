@@ -43,14 +43,16 @@ from foundry_mcp.tools.foundry_handoff import _hash_str
 # CONTEXT.md.
 # ---------------------------------------------------------------------------
 KNOWN_EVIDENCE_FAILURE_TOKENS: tuple[str, ...] = (
-    "EVIDENCE_COMMAND_MISSING",
-    "EVIDENCE_TIMEOUT",
-    "EVIDENCE_EXIT_NONZERO",
-    "EVIDENCE_OUTPUT_MISMATCH",
-    "EVIDENCE_STUB_DETECTED",
-    "EVIDENCE_VOLATILE_MALFORMED",
-    "EVIDENCE_COMMIT_MISSING",
-    "EVIDENCE_NETWORK_VIOLATION",  # reserved in v1; never fires; activated by future per-evidence network-deny opt-in
+    "EVIDENCE_COMMAND_MISSING",          # Phase 4 / EVID-01
+    "EVIDENCE_TIMEOUT",                  # Phase 4 / EVID-01
+    "EVIDENCE_EXIT_NONZERO",             # Phase 4 / EVID-01
+    "EVIDENCE_OUTPUT_MISMATCH",          # Phase 4 / EVID-01
+    "EVIDENCE_STUB_DETECTED",            # Phase 4 / EVID-01
+    "EVIDENCE_VOLATILE_MALFORMED",       # Phase 4 / EVID-01
+    "EVIDENCE_COMMIT_MISSING",           # Phase 4 / EVID-01
+    "EVIDENCE_NETWORK_VIOLATION",        # Phase 4 / EVID-01 reserved; never fires; activated by future per-evidence network-deny opt-in
+    "EVIDENCE_REQUIREMENT_UNBOUND",      # Phase 5 / EVID-02 addition
+    "EVIDENCE_FOR_MALFORMED",            # Phase 5 / EVID-02 addition
 )
 
 # Sanity-bounded timeout discipline. Default fires when an evidence file omits
@@ -77,7 +79,9 @@ VOLATILE_PLACEHOLDER: str = "<VOLATILE>"
 # silently ignores unknown directives so Phase 5 can introduce its directive
 # at activation time (mirrors Phase 1 ``[IMPLICIT_FACT:CATEGORY]`` precedent —
 # introduced by the same phase that owns it).
-_KNOWN_HEADER_DIRECTIVES: frozenset[str] = frozenset({"cmd", "volatile", "timeout"})
+_KNOWN_HEADER_DIRECTIVES: frozenset[str] = frozenset(
+    {"cmd", "volatile", "timeout", "for"}  # Phase 5 / EVID-02 — 'for' added
+)
 
 
 # ---------------------------------------------------------------------------
