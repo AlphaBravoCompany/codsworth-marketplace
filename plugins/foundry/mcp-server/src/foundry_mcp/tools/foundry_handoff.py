@@ -205,6 +205,8 @@ def foundry_accept_casting(
     prompt_hash: str,
     completion_report: str,
     project_root: str = ".",
+    *,
+    casting_commit: str | None = None,
 ) -> dict:
     """Gate the acceptance of a completed casting.
 
@@ -216,6 +218,13 @@ def foundry_accept_casting(
       4. Returns the list of acceptance criteria from the casting's
          <spec_requirements> block so the lead can verify each against
          the completion report
+      5. **Phase 4 / EVID-01:** Re-runs the teammate's cited evidence
+         commands server-side via ``verify_evidence``. On v2.0 specs,
+         records an EVID-01 stream-skip (Phase 1/2/3 backwards-compat).
+         On v2.1+ specs, re-executes each ``evidence/casting-{id}-*.log``
+         in an isolated worktree and rejects on byte-mismatch, timeout,
+         non-zero exit, missing command, malformed volatile regex, or
+         stub-pattern hit.
 
     It does NOT mechanically check that the completion report satisfies
     the ACs — that requires semantic understanding. It provides the
@@ -227,13 +236,23 @@ def foundry_accept_casting(
         prompt_hash: Hash of casting-{id}-prompt.md (from Foundry-Spawn-Teammate)
         completion_report: The teammate's completion report text
         project_root: Repo root
+        casting_commit: Phase 4 / EVID-01 — full SHA of the casting's
+            commit (rev-parseable). Required for evidence re-execution
+            (``verify_evidence`` checks out this commit in a detached
+            worktree). When None, evidence verification is bypassed
+            (Phase 4 backwards-compat for callers not yet updated).
 
     Returns:
         On success:
             {"ok": True, "casting_id": N, "acceptance_criteria": [...],
-             "must_verify": [...], "warning": str | None}
+             "must_verify": [...], "warning": str | None,
+             "evidence_verdict": "accepted" | "skipped",
+             "evidence_provenance": [...]}
         On failure:
             {"ok": False, "error": "...", "hint": "..."}
+        On evidence rejection:
+            {"ok": False, "failure_token": "EVIDENCE_*", "failure_detail": "...",
+             "evidence_provenance": [...]}
     """
     fdir = get_run_dir(project_root)
     if not fdir:
@@ -324,6 +343,99 @@ def foundry_accept_casting(
         if not found_citation:
             missing_citations.append(rid)
 
+    # ============================================================
+    # Phase 4 / EVID-01: server-side evidence re-execution.
+    #
+    # Inserted between the req-ID citation check and the scope-flag check.
+    # On v2.0 specs, verify_evidence routes through manifest.stream_skips
+    # (Phase 1/2/3 backwards-compat — same machinery as Phase 3 stream-skips
+    # but with EVID-01 as a virtual stream owned by foundry_accept_casting).
+    # On v2.1+ specs, every cited evidence command is re-run server-side
+    # and rejected on byte-mismatch, timeout, non-zero exit, missing
+    # command, malformed volatile regex, or stub-pattern hit.
+    #
+    # casting_commit=None is the backwards-compat shim for callers not yet
+    # updated; evidence verification is bypassed in that case so the gate
+    # doesn't break test fixtures + prior-Phase callsites that haven't
+    # migrated. Production callers MUST pass the SHA from the teammate's
+    # completion report (via Foundry-Spawn-Teammate or git rev-parse HEAD).
+    # ============================================================
+    evidence_verdict = None
+    evidence_provenance: list[dict] = []
+    if casting_commit is not None:
+        from foundry_mcp.tools.evidence import verify_evidence
+        from foundry_mcp.tools.foundry_state import get_run_dir as _get_run_dir
+
+        # Resolve run_dir for worktree storage. fdir is the active foundry
+        # run dir (computed at function entry); pass it through so the
+        # worktree lives under foundry-archive/{run}/worktrees/.
+        evidence_result = verify_evidence(
+            casting_id=casting_id,
+            project_root=Path(project_root),
+            casting_commit=casting_commit,
+            spec_path=Path(project_root) / "specs" / "spec.md",
+            run_dir=fdir,
+        )
+        evidence_verdict = evidence_result["verdict"]
+        evidence_provenance = list(evidence_result.get("provenance_records", []))
+
+        # Audit-log per evidence file (two-channel audit: manifest +
+        # handoffs.jsonl). Mirrors Phase 1/2/3 dual-channel pattern.
+        for record in evidence_provenance:
+            foundry_handoff(
+                event="evidence_verified",
+                source=f"castings/casting-{casting_id}-prompt.md",
+                destination=record.get("evidence_path", ""),
+                source_reread=True,
+                summary=(
+                    f"casting {casting_id} evidence verdict={record.get('verdict')} "
+                    f"token={record.get('failure_token') or 'none'} "
+                    f"elapsed={record.get('elapsed_seconds')}s"
+                ),
+                information_loss=record.get("failure_detail") or "",
+                project_root=project_root,
+            )
+
+        # Stdout summary line (Phase 3 F0.5 stdout-summary precedent).
+        accepted = sum(
+            1 for r in evidence_provenance if r.get("verdict") == "accepted"
+        )
+        rejected = sum(
+            1 for r in evidence_provenance if r.get("verdict") == "rejected"
+        )
+        tokens = sorted(
+            {
+                r.get("failure_token")
+                for r in evidence_provenance
+                if r.get("failure_token")
+            }
+        )
+        print(
+            f"Foundry-Accept-Casting: casting {casting_id} — "
+            f"evidence verdicts: {accepted} accepted, {rejected} rejected "
+            f"(tokens: {','.join(tokens) if tokens else 'none'})",
+            flush=True,
+        )
+
+        # Hard-reject on evidence verdict='rejected'. Skip path (v2.0)
+        # falls through to scope-flag check; the manifest.stream_skips
+        # record is the audit signal that evidence verification was
+        # structurally bypassed for this run.
+        if evidence_verdict == "rejected":
+            return {
+                "ok": False,
+                "casting_id": casting_id,
+                "failure_token": evidence_result["failure_token"],
+                "failure_detail": evidence_result["failure_detail"],
+                "evidence_provenance": evidence_provenance,
+                "hint": (
+                    "Evidence re-execution rejected the casting. The teammate's "
+                    "committed log diverges from a clean re-execution of "
+                    "`# evidence-cmd:`. Re-run the command yourself, inspect "
+                    "the diff, and re-dispatch with corrected evidence."
+                ),
+            }
+
     # Check for "out of scope" or "cut scope" mentions in the teammate report
     warning_phrases = [
         "out-of-scope",
@@ -383,4 +495,6 @@ def foundry_accept_casting(
             f"Research compliance check (if research_context applies): each recommendation honored",
         ],
         "warning": warning,
+        "evidence_verdict": evidence_verdict,
+        "evidence_provenance": evidence_provenance,
     }

@@ -21,6 +21,7 @@ Closed vocabulary: every public failure path emits exactly one member of
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 import shutil
@@ -907,8 +908,128 @@ def _verify_one_evidence_file(
 
 
 # ---------------------------------------------------------------------------
-# Top-level entry point (Plan 04-03 body; Plan 04-04 wired into
-# foundry_accept_casting + adds v2.0 stream-skip routing + manifest writes).
+# v2.0 backwards-compat routing + manifest persistence (Plan 04-04 territory).
+#
+# spec_format_version frontmatter parsing duplicates the small regex pair from
+# plugins/forge/scripts/validate-spec.py (extract_frontmatter shape) — the
+# script's hyphen-named filename (validate-spec.py) is not a valid Python
+# identifier so cross-import is impossible (RESEARCH.md Anti-Pattern: hyphen-
+# named scripts can't be imported). Same regex shape locked to Phase 3 Plan
+# 03-02 patterns; permissive defaults — validator-script's job to hard-fail
+# on unknown versions at SPEC FORGED time. Plan 04-04 just routes the legacy
+# v2.0 path through manifest.stream_skips.
+# ---------------------------------------------------------------------------
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+_SPEC_VERSION_RE = re.compile(
+    r"^\s*spec_format_version\s*:\s*(?:\"([^\"\n]+)\"|'([^'\n]+)'|(\S+))",
+    re.MULTILINE,
+)
+
+
+def _read_spec_format_version(spec_path: Path) -> tuple[int, int]:
+    """Return parsed ``(major, minor)`` tuple, defaulting to ``(2, 0)`` on
+    absence or any parse failure.
+
+    Mirrors Phase 3's ``extract_frontmatter`` shape; duplicated here because
+    hyphen-named ``validate-spec.py`` cannot be imported. Permissive defaults
+    — ``validate-spec.py`` is the script that hard-fails on unknown versions
+    at SPEC FORGED time. Plan 04-04 just needs a routing decision: v2.0 →
+    stream-skip; v2.1+ → engage re-execution.
+    """
+    if not spec_path.exists():
+        return (2, 0)
+    try:
+        text = spec_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return (2, 0)
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return (2, 0)
+    block = m.group(1)
+    kv = _SPEC_VERSION_RE.search(block)
+    if not kv:
+        return (2, 0)
+    val = (kv.group(1) or kv.group(2) or kv.group(3) or "").strip()
+    vm = re.match(r"^v(\d+)\.(\d+)$", val)
+    if not vm:
+        return (2, 0)
+    return (int(vm.group(1)), int(vm.group(2)))
+
+
+def _append_to_manifest_stream_skips(
+    project_root: Path,
+    skip_record: dict[str, Any],
+) -> None:
+    """Append ``skip_record`` to ``manifest.stream_skips`` (Phase 3 schema).
+
+    Initializes the array if absent; preserves existing entries. Silently
+    no-ops when ``castings/manifest.json`` is absent (test harnesses that
+    don't synthesize a manifest still function — provenance lives only in
+    the returned dict).
+    """
+    manifest_path = project_root / "castings" / "manifest.json"
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    skips = manifest.setdefault("stream_skips", [])
+    if not isinstance(skips, list):
+        skips = []
+        manifest["stream_skips"] = skips
+    skips.append(skip_record)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _append_to_manifest_evidence_provenance(
+    project_root: Path,
+    casting_id: int | str,
+    record: dict[str, Any],
+) -> None:
+    """Append ``record`` to ``manifest.castings[N].evidence_provenance``.
+
+    Locates the casting by string-equal id match against ``castings[*].id``;
+    synthesizes a minimal entry if absent (Plan 04-04 author's discretion;
+    upgrade to error if abuse surfaces). Silently no-ops when manifest is
+    missing — same discipline as ``_append_to_manifest_stream_skips``.
+    """
+    manifest_path = project_root / "castings" / "manifest.json"
+    if not manifest_path.exists():
+        return
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    castings = manifest.setdefault("castings", [])
+    if not isinstance(castings, list):
+        castings = []
+        manifest["castings"] = castings
+    casting = next(
+        (c for c in castings if str(c.get("id")) == str(casting_id)),
+        None,
+    )
+    if casting is None:
+        casting = {"id": str(casting_id), "evidence_provenance": []}
+        castings.append(casting)
+    arr = casting.setdefault("evidence_provenance", [])
+    if not isinstance(arr, list):
+        arr = []
+        casting["evidence_provenance"] = arr
+    arr.append(record)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level entry point (Plan 04-03 body refactored into
+# _verify_evidence_v21_body; Plan 04-04 wraps with v2.0 stream-skip routing +
+# manifest persistence + foundry_accept_casting integration).
 # ---------------------------------------------------------------------------
 def verify_evidence(
     casting_id: int | str,
@@ -920,25 +1041,27 @@ def verify_evidence(
 ) -> dict[str, Any]:
     """Top-level Phase 4 evidence verification entry point.
 
-    Plan 04-03 ships the worktree + subprocess + redaction + comparator
-    + stub-pattern wiring. Plan 04-04 wraps with v2.0 stream-skip routing
-    and manifest persistence.
-
-    Discovers ``evidence/casting-{id}-*.log`` in the casting commit's
-    worktree, parses each, re-executes, redacts, compares, runs stub
-    patterns, returns provenance records. ``try/finally`` guarantees
-    worktree teardown on success AND failure paths.
+    Plan 04-04 wraps Plan 04-03's body with:
+      - v2.0 backwards-compat routing: if ``spec_format_version`` parsed from
+        ``spec_path`` is below ``MIN_SPEC_FORMAT_VERSION_FOR_EVID_01`` (i.e.
+        ``v2.0``), record an EVID-01 entry in ``manifest.stream_skips`` and
+        return ``verdict='skipped'`` WITHOUT re-execution (worktree never
+        created — preserves Phase 1/2/3 v4.2.0 backwards-compat).
+      - Manifest persistence: on the v2.1+ path, every provenance record is
+        also appended to ``manifest.castings[N].evidence_provenance``.
 
     Args:
         casting_id: casting identifier (int or str — manifest stores as str).
         project_root: repo root containing ``.git`` and the casting commit.
         casting_commit: full SHA of the casting's commit (rev-parseable).
-        spec_path: optional explicit spec.md path; reserved for Plan 04-04
-            spec_format_version routing — not consumed in Plan 04-03.
+        spec_path: optional explicit spec.md path. When absent, defaults to
+            ``project_root / 'specs' / 'spec.md'``. Read for
+            ``spec_format_version`` to decide v2.0 stream-skip vs v2.1+
+            engagement. Missing/unparseable → v2.0 (permissive default;
+            validate-spec.py is the hard-fail authority).
         run_dir: parent directory under which the worktree is created at
-            ``run_dir / 'worktrees' / 'casting-{id}'``. REQUIRED in Plan
-            04-03; Plan 04-04 derives it via ``foundry_state.get_run_dir``
-            when absent.
+            ``run_dir / 'worktrees' / 'casting-{id}'``. REQUIRED on the
+            v2.1+ engagement path; not consumed on the v2.0 skip path.
 
     Returns:
         ``{
@@ -949,13 +1072,73 @@ def verify_evidence(
             'manifest_updates': dict,
         }``
 
-    The ``manifest_updates`` dict is empty in Plan 04-03; Plan 04-04
-    populates ``stream_skips`` on the v2.0 path and other manifest fields.
+    On the v2.0 skip path ``manifest_updates['stream_skips']`` carries the
+    appended record so callers (e.g. ``foundry_accept_casting``) can audit
+    the routing decision without re-reading the manifest.
+    """
+    # v2.0 backwards-compat gate (Plan 04-04 / Pitfall 6 from RESEARCH.md).
+    # Reading spec_format_version BEFORE worktree setup keeps the v2.0 path
+    # zero-cost — no .git/config.lock contention, no subprocess spawn.
+    effective_spec_path = (
+        spec_path if spec_path is not None
+        else project_root / "specs" / "spec.md"
+    )
+    spec_version = _read_spec_format_version(effective_spec_path)
+    if spec_version < MIN_SPEC_FORMAT_VERSION_FOR_EVID_01:
+        skip_record = {
+            "stream_id": "EVID-01",
+            "reason": "spec_format_version",
+            "spec_version": f"v{spec_version[0]}.{spec_version[1]}",
+            "stream_min": (
+                f"v{MIN_SPEC_FORMAT_VERSION_FOR_EVID_01[0]}."
+                f"{MIN_SPEC_FORMAT_VERSION_FOR_EVID_01[1]}"
+            ),
+            "agent_path": None,  # virtual stream — owned by foundry_accept_casting
+        }
+        _append_to_manifest_stream_skips(project_root, skip_record)
+        return {
+            "verdict": "skipped",
+            "failure_token": None,
+            "failure_detail": None,
+            "provenance_records": [],
+            "manifest_updates": {"stream_skips": [skip_record]},
+        }
+
+    # v2.1+ engagement path delegates to the Plan 04-03 body, then persists
+    # provenance records into manifest.castings[N].evidence_provenance.
+    result = _verify_evidence_v21_body(
+        casting_id=casting_id,
+        project_root=project_root,
+        casting_commit=casting_commit,
+        run_dir=run_dir,
+    )
+    for record in result.get("provenance_records", []):
+        _append_to_manifest_evidence_provenance(project_root, casting_id, record)
+    return result
+
+
+def _verify_evidence_v21_body(
+    casting_id: int | str,
+    project_root: Path,
+    casting_commit: str,
+    *,
+    run_dir: Path | None = None,
+) -> dict[str, Any]:
+    """v2.1+ evidence-verification body (Plan 04-03 logic, byte-equivalent).
+
+    Discovers ``evidence/casting-{id}-*.log`` in the casting commit's
+    worktree, parses each, re-executes, redacts, compares, runs stub
+    patterns, returns provenance records. ``try/finally`` guarantees
+    worktree teardown on success AND failure paths.
+
+    Plan 04-04 lifts the body unchanged from Plan 04-03's ``verify_evidence``
+    so the v2.0 routing wrapper can decide before re-execution begins.
     """
     if run_dir is None:
         raise ValueError(
-            "run_dir required in Plan 04-03; Plan 04-04 derives via "
-            "foundry_state.get_run_dir when absent"
+            "run_dir required for v2.1+ engagement path; Plan 04-04 callers "
+            "(e.g. foundry_accept_casting) must derive it via "
+            "foundry_state.get_run_dir before invoking verify_evidence"
         )
 
     # Pitfall 1: clean up orphaned worktrees from prior crashes (idempotent
