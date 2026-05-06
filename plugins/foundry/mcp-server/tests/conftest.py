@@ -279,34 +279,42 @@ def _build_synth_project(
         encoding="utf-8",
     )
 
-    # Plan 05-01: synthesize casting prompt with <spec_requirements> block.
-    # Phase 4's harness did not emit one (Phase 4's verify_evidence does not
-    # consume it). Plan 05-03 will read the block via foundry_handoff.py's
-    # req_id_pattern regex. We write a minimal block here so Plans 05-02/03
-    # can opt in via casting_req_ids_override, and so default callers get a
-    # deterministic two-ID set ([US-1, FR-2]) matching evidence_log_clean.log.
+    # Plan 05-01 / Plan 05-03: synthesize casting prompt with <spec_requirements>
+    # block ONLY when ``casting_req_ids_override`` is non-None.
     #
-    # When ``casting_req_ids_override`` is None, the default set is
-    # ["US-1", "FR-2"] — which exactly matches evidence_log_clean.log's
-    # for-line. Phase 4 callers (test_evidence.py) ignore this file entirely.
-    req_ids_for_prompt = (
-        list(casting_req_ids_override)
-        if casting_req_ids_override is not None
-        else ["US-1", "FR-2"]
-    )
-    casting_prompt_path = (
-        project_root / "castings" / f"casting-{casting_id}.prompt.md"
-    )
-    spec_req_lines = "\n".join(
-        f"- {rid}: synthesized requirement for testing"
-        for rid in req_ids_for_prompt
-    )
-    casting_prompt_path.write_text(
-        "<spec_requirements>\n"
-        f"{spec_req_lines}\n"
-        "</spec_requirements>\n",
-        encoding="utf-8",
-    )
+    # Why conditional (Plan 05-03 Edit 5): once Phase 5's gate fires at
+    # ``foundry_accept_casting``, the gate runs whenever ``casting_req_ids``
+    # is non-empty. Phase 4 fixtures don't carry ``# evidence-for:`` headers,
+    # so a default ["US-1", "FR-2"] block would force Phase 4 tests through
+    # the unbound-rejection path and break their byte-equivalent guarantees.
+    #
+    # Plan 05-01 originally synthesized this unconditionally with default
+    # IDs matching evidence_log_for_clean.log; Plan 05-03 tightens to
+    # "explicit-override-only" so:
+    #   - Phase 4 tests (no override) → no <spec_requirements> block →
+    #     casting_req_ids parsed from a missing block is empty →
+    #     gate bypassed (zero-req casting bypass clause)
+    #   - Phase 5 integration tests (override set) → block written →
+    #     gate runs → enforcement path verified
+    #
+    # The corresponding ``casting-{id}-prompt.md`` (with dash, matching
+    # ``foundry_accept_casting``'s expected filename pattern) lands at the
+    # active foundry-archive run dir during the integration-dispatch path
+    # (see ``run_accept_casting_with_evidence._invoke_once`` below).
+    if casting_req_ids_override is not None:
+        casting_prompt_path = (
+            project_root / "castings" / f"casting-{casting_id}.prompt.md"
+        )
+        spec_req_lines = "\n".join(
+            f"- {rid}: synthesized requirement for testing"
+            for rid in casting_req_ids_override
+        )
+        casting_prompt_path.write_text(
+            "<spec_requirements>\n"
+            f"{spec_req_lines}\n"
+            "</spec_requirements>\n",
+            encoding="utf-8",
+        )
 
     if not omit_required_evidence:
         # evidence/casting-N-name.log lives in evidence/ so verify_evidence's
@@ -748,6 +756,116 @@ def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
             if primary.get("provenance_records")
             else None
         )
+
+        # ============================================================
+        # Plan 05-03 / EVID-02 — integration dispatch through
+        # foundry_accept_casting.
+        #
+        # The Phase 5 per-requirement-coverage gate lives in
+        # foundry_accept_casting (foundry_handoff.py); verify_evidence
+        # alone cannot surface EVIDENCE_REQUIREMENT_UNBOUND. When the
+        # caller passes ``casting_req_ids_override``, the harness sets up
+        # an active foundry run, wires the spec + prompt into the run
+        # dir at the filenames foundry_accept_casting expects (with-dash
+        # ``casting-{id}-prompt.md``), and dispatches through it. The
+        # Phase 5 result fields (``failure_token``, ``unbound_requirements``,
+        # ``ok``) override the verify_evidence-derived defaults.
+        #
+        # Phase 4 callsites (no override) skip this branch entirely so
+        # the Phase 4 24-test surface continues to run on the verify_evidence-
+        # only path.
+        # ============================================================
+        if casting_req_ids_override is not None:
+            from foundry_mcp.tools.foundry_handoff import (
+                foundry_accept_casting as _accept,
+                _hash_str as _h,
+            )
+            from foundry_mcp.tools.foundry_state import (
+                set_active_run as _set_run,
+                clear_active_run as _clear_run,
+                ARCHIVE_DIR as _ARCH,
+            )
+
+            run_name = f"phase5-test-{casting_id}-{os.getpid()}"
+            fdir = project_root / _ARCH / run_name
+            fdir.mkdir(parents=True, exist_ok=True)
+            (fdir / "castings").mkdir(parents=True, exist_ok=True)
+
+            # Copy spec.md to fdir (foundry_accept_casting reads
+            # ``fdir / 'spec.md'`` via foundry_spec_hash).
+            spec_src = project_root / "specs" / "spec.md"
+            spec_dst = fdir / "spec.md"
+            spec_text = spec_src.read_text(encoding="utf-8")
+            spec_dst.write_text(spec_text, encoding="utf-8")
+            spec_hash = _h(spec_text)
+
+            # Copy the casting prompt to fdir under the dash-form filename
+            # foundry_accept_casting reads (``casting-{id}-prompt.md``).
+            prompt_src = (
+                project_root / "castings" / f"casting-{casting_id}.prompt.md"
+            )
+            prompt_dst = fdir / "castings" / f"casting-{casting_id}-prompt.md"
+            prompt_text = prompt_src.read_text(encoding="utf-8")
+            prompt_dst.write_text(prompt_text, encoding="utf-8")
+            prompt_hash = _h(prompt_text)
+
+            # Synthesize a completion report that satisfies citation
+            # discipline for each req_id (file:line within 300 chars of
+            # each ID mention) so missing_citations stays empty and
+            # doesn't mask the EVIDENCE_REQUIREMENT_UNBOUND signal.
+            completion_lines = [
+                f"{rid} implemented at src/synth.py:{42 + idx}"
+                for idx, rid in enumerate(casting_req_ids_override)
+            ]
+            completion_report = "\n".join(completion_lines) + "\n"
+
+            _set_run(run_name)
+            try:
+                accept_result = _accept(
+                    casting_id=casting_id,
+                    spec_hash=spec_hash,
+                    prompt_hash=prompt_hash,
+                    completion_report=completion_report,
+                    project_root=str(project_root),
+                    casting_commit=effective_commit,
+                )
+            finally:
+                _clear_run()
+
+            # Merge accept_result fields into the harness return shape.
+            # Verify_evidence's verdict/provenance is preserved when
+            # foundry_accept_casting accepted; on rejection-path we surface
+            # accept_result's failure_token + unbound_requirements.
+            #
+            # Verdict mapping:
+            #   verify_evidence "skipped"  → keep "skipped" (v2.0 path —
+            #     accept_result also reports evidence_verdict='skipped'
+            #     and the Phase 5 gate is bypassed by guard).
+            #   accept_result["ok"] False  → "rejected" (Phase 5 unbound
+            #     check fired, OR Phase 4 hard-reject already fired).
+            #   accept_result["ok"] True   → "accepted" (v2.1 full
+            #     coverage OR v2.0 stream-skip).
+            verdict_from_accept: str
+            if primary["verdict"] == "skipped":
+                verdict_from_accept = "skipped"
+            elif accept_result.get("ok") is False:
+                verdict_from_accept = "rejected"
+            else:
+                verdict_from_accept = "accepted"
+
+            return {
+                "verdict": verdict_from_accept,
+                "failure_token": accept_result.get("failure_token")
+                or primary.get("failure_token"),
+                "failure_detail": accept_result.get("failure_detail")
+                or primary.get("failure_detail"),
+                "unbound_requirements": accept_result.get("unbound_requirements"),
+                "provenance": provenance,
+                "all_provenance": primary.get("provenance_records", []),
+                "manifest": manifest,
+                "manifest_updates": primary.get("manifest_updates", {}),
+                "accept_result": accept_result,
+            }
 
         return {
             "verdict": primary["verdict"],

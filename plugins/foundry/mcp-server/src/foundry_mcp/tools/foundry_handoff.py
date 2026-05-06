@@ -436,6 +436,65 @@ def foundry_accept_casting(
                 ),
             }
 
+        # ============================================================
+        # Phase 5 / EVID-02: per-requirement-coverage check (strictness
+        # upgrade to EVID-01).
+        #
+        # Runs only when:
+        #   1. evidence verification engaged AND verdict was "accepted"
+        #      (skipped → v2.0 stream-skip routing; rejected → Phase 4
+        #      already returned; both bypass this check)
+        #   2. casting_req_ids is non-empty (zero-req castings — refactors,
+        #      doc edits — legitimately need no per-requirement binding)
+        #
+        # Computes the set difference of casting requirement IDs against
+        # the union of `evidence_for` lists across all provenance records.
+        # Non-empty difference → reject with named missing IDs.
+        #
+        # casting_commit=None bypasses the entire enclosing block (Phase 4
+        # backwards-compat shim — Pitfall 7); this check inherits.
+        #
+        # Why set(casting_req_ids) - bound_ids (not the reverse): "unbound"
+        # = "in the casting but not bound by any artifact". The reverse
+        # direction would surface "over-coverage" (artifact cites IDs not
+        # in the casting), which 05-RESEARCH.md decided to silently drop
+        # (closed-vocabulary minimization). Over-coverage is not an error.
+        # ============================================================
+        if (
+            evidence_verdict == "accepted"  # don't double-reject after Phase 4 fail
+            and casting_req_ids  # zero-req castings need no per-req binding
+        ):
+            bound_ids: set[str] = set()
+            for record in evidence_provenance:
+                for rid in record.get("evidence_for", []):
+                    bound_ids.add(rid)
+            unbound = sorted(set(casting_req_ids) - bound_ids)
+            if unbound:
+                # Hard-reject with named missing IDs (SC#4 satisfied).
+                return {
+                    "ok": False,
+                    "casting_id": casting_id,
+                    "failure_token": "EVIDENCE_REQUIREMENT_UNBOUND",
+                    "failure_detail": (
+                        f"casting {casting_id} has no evidence artifact bound to "
+                        f"requirement(s): {', '.join(unbound)}. Each committed "
+                        f"evidence file must carry a `# evidence-for: <ids>` "
+                        f"header listing the requirement IDs it demonstrates."
+                    ),
+                    "unbound_requirements": unbound,
+                    "evidence_verdict": evidence_verdict,
+                    "evidence_provenance": evidence_provenance,
+                    "requirement_ids": casting_req_ids,
+                    "hint": (
+                        f"Add a `# evidence-for: {', '.join(unbound)}` header "
+                        f"line to the relevant evidence file(s) and re-commit. "
+                        f"Multiple files may bind to the same requirement; one "
+                        f"file may bind to multiple requirements (comma-separated "
+                        f"list). See plugins/foundry/agents/teammate.md Step 11 "
+                        f"for the canonical evidence-file format."
+                    ),
+                }
+
     # Check for "out of scope" or "cut scope" mentions in the teammate report
     warning_phrases = [
         "out-of-scope",
