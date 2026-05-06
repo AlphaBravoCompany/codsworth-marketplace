@@ -112,7 +112,7 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
    - `plugins/foundry/agents/research-auditor.md` (RESEARCH_AUDIT)
    - `plugins/foundry/agents/coverage-diff.md` (COVERAGE_DIFF)
    - **EVID-01** (virtual stream — `agent_path: null`; `min_spec_format_version: v2.1`; owned by `Foundry-Accept-Casting` / `plugins/foundry/mcp-server/src/foundry_mcp/tools/evidence.py`). Phase 4 / EVID-01 server-side evidence re-execution. Has no agent markdown file; the min-version comes from the Python constant `MIN_SPEC_FORMAT_VERSION_FOR_EVID_01 = (2, 1)` in `evidence.py` rather than from agent frontmatter.
-   - [Future: PROBE-01 → `plugins/forge/agents/spec-reviewer.md` added by Phase 6]
+   - `plugins/forge/agents/spec-reviewer.md` (PROBE-01)
    - [Future: TEST-01 → `plugins/foundry/agents/spec-test-deriver.md` added by Phase 7]
    - [Future: INTENT-01 → `plugins/foundry/agents/intent-carrier.md` added by Phase 8]
 
