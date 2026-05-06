@@ -733,6 +733,7 @@ def _make_provenance_record(
     verdict: str,
     failure_token: str | None,
     failure_detail: str | None,
+    evidence_for: list[str] | None = None,  # Phase 5 / EVID-02 — defaults []
 ) -> dict[str, Any]:
     """Build a single 13-field provenance record (CONTEXT.md schema).
 
@@ -747,6 +748,15 @@ def _make_provenance_record(
     at re-exec time (NEVER values — abuse trail per CONTEXT.md). The
     redacted_* SHA256s let auditors verify the comparator decision after
     the fact without re-deriving regex application.
+
+    Plan 05-03 / EVID-02: ``evidence_for`` field carries the requirement
+    IDs declared in the artifact's ``# evidence-for:`` header (parsed
+    upstream by ``_parse_evidence_header`` Plan 05-02 dispatch branch).
+    Defaults to empty list so backwards-compat callers that haven't
+    migrated produce records with ``evidence_for=[]`` rather than
+    KeyError on field absence. The Phase 5 coverage check at
+    ``foundry_handoff.py::foundry_accept_casting`` is the primary
+    consumer at the gate layer.
     """
     rel_path: str
     try:
@@ -771,6 +781,7 @@ def _make_provenance_record(
         "verdict": verdict,
         "failure_token": failure_token,
         "failure_detail": failure_detail,
+        "evidence_for": list(evidence_for or []),  # Phase 5 / EVID-02
     }
 
 
@@ -795,9 +806,21 @@ def _verify_one_evidence_file(
     log_text = evidence_path.read_text(encoding="utf-8", errors="replace")
 
     # Step 1: Parse header.
+    #
+    # Plan 05-03: catch-block routes EVIDENCE_FOR_MALFORMED separately from
+    # EVIDENCE_VOLATILE_MALFORMED so the surfaced failure_token names the
+    # actual concern (Phase 5 / EVID-02 closed-vocabulary discipline). The
+    # parser raises ValueError with a token-prefixed message for both
+    # branches; we sniff the prefix to route. Default fallback preserves
+    # Phase 4 behavior (any unrecognized prefix → EVIDENCE_VOLATILE_MALFORMED).
     try:
         header = _parse_evidence_header(log_text)
     except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("EVIDENCE_FOR_MALFORMED"):
+            token = "EVIDENCE_FOR_MALFORMED"
+        else:
+            token = "EVIDENCE_VOLATILE_MALFORMED"  # legacy fallback
         return _make_provenance_record(
             evidence_path=evidence_path,
             evidence_cmd=None,
@@ -809,8 +832,9 @@ def _verify_one_evidence_file(
             exit_code=None,
             elapsed_seconds=0.0,
             verdict="rejected",
-            failure_token="EVIDENCE_VOLATILE_MALFORMED",
-            failure_detail=str(exc),
+            failure_token=token,
+            failure_detail=msg,
+            evidence_for=[],  # parse failed — no IDs available
         )
 
     # Step 2: Cmd presence is mandatory.
@@ -828,6 +852,7 @@ def _verify_one_evidence_file(
             verdict="rejected",
             failure_token="EVIDENCE_COMMAND_MISSING",
             failure_detail=f"no `# evidence-cmd:` header in {evidence_path.name}",
+            evidence_for=header.get("evidence_for", []),
         )
 
     timeout = header.get("timeout") or EVIDENCE_TIMEOUT_DEFAULT_SECONDS
@@ -854,6 +879,7 @@ def _verify_one_evidence_file(
             failure_detail=(
                 f"command exceeded {timeout}s; killed via SIGTERM/SIGKILL"
             ),
+            evidence_for=header.get("evidence_for", []),
         )
 
     # Step 4b: Non-zero exit → EVIDENCE_EXIT_NONZERO.
@@ -871,6 +897,7 @@ def _verify_one_evidence_file(
             verdict="rejected",
             failure_token="EVIDENCE_EXIT_NONZERO",
             failure_detail=f"command exited with code {exit_code}",
+            evidence_for=header.get("evidence_for", []),
         )
 
     # Step 5: Byte-match comparison (volatile redaction applied to both).
@@ -894,6 +921,7 @@ def _verify_one_evidence_file(
             verdict="rejected",
             failure_token="EVIDENCE_VOLATILE_MALFORMED",
             failure_detail=str(exc),
+            evidence_for=header.get("evidence_for", []),
         )
 
     if not matched:
@@ -910,6 +938,7 @@ def _verify_one_evidence_file(
             verdict="rejected",
             failure_token="EVIDENCE_OUTPUT_MISMATCH",
             failure_detail=diff,
+            evidence_for=header.get("evidence_for", []),
         )
 
     # Step 6: Stub patterns fire ON TOP of byte-match (CONTEXT.md locked).
@@ -928,6 +957,7 @@ def _verify_one_evidence_file(
             verdict="rejected",
             failure_token="EVIDENCE_STUB_DETECTED",
             failure_detail=f"{stub_token}: stub-pattern hit on committed log",
+            evidence_for=header.get("evidence_for", []),
         )
 
     # Accepted.
@@ -944,6 +974,7 @@ def _verify_one_evidence_file(
         verdict="accepted",
         failure_token=None,
         failure_detail=None,
+        evidence_for=header.get("evidence_for", []),
     )
 
 
