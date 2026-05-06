@@ -20,6 +20,7 @@ Closed vocabulary: every public failure path emits exactly one member of
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 import shutil
@@ -431,6 +432,239 @@ def _prune_orphaned_worktrees(project_root: Path) -> None:
         timeout=15,
     )
     _PRUNE_DONE_FOR.add(key)
+
+
+# ---------------------------------------------------------------------------
+# Byte-match comparator with declared-volatile redaction + capped diff
+# (Plan 04-03).
+#
+# Closed escape-hatch: ONLY declared volatility tolerated. The redaction
+# runs on BOTH committed log and re-execution capture in the same declared
+# order, then byte-compares. Any divergence is a failure.
+#
+# Diff cap: 50 lines via ``_DIFF_CAP_LINES``. Larger diffs append a
+# truncation marker so the failure_detail stays scannable.
+# ---------------------------------------------------------------------------
+_DIFF_CAP_LINES: int = 50
+
+
+def _compare_byte_match(
+    committed: str,
+    captured: str,
+    volatile_patterns: list[str],
+) -> tuple[bool, str | None, str, str]:
+    """Apply volatile redaction to both inputs in declared order, byte-compare.
+
+    Args:
+        committed: committed log text (the evidence-file body).
+        captured: re-execution stdout+stderr capture.
+        volatile_patterns: ordered list of redaction regex patterns.
+
+    Returns:
+        ``(matched, capped_diff_or_None, redacted_committed, redacted_captured)``
+        — the redacted strings are returned so the caller can SHA256-hash
+        them for the ``redacted_log_sha256`` / ``redacted_captured_sha256``
+        provenance fields without re-invoking the redaction.
+
+    Raises:
+        ValueError prefixed ``EVIDENCE_VOLATILE_MALFORMED`` (propagated from
+        ``_apply_volatile_redaction``) when a pattern fails to compile.
+
+    On mismatch the diff is unified-format via ``difflib.unified_diff``,
+    capped at ``_DIFF_CAP_LINES`` lines; if truncated, a "... (N more
+    diff lines truncated)" sentinel is appended.
+    """
+    rc = _apply_volatile_redaction(committed, volatile_patterns)
+    rcc = _apply_volatile_redaction(captured, volatile_patterns)
+    if rc == rcc:
+        return True, None, rc, rcc
+    diff_lines = list(
+        difflib.unified_diff(
+            rc.splitlines(keepends=True),
+            rcc.splitlines(keepends=True),
+            fromfile="committed",
+            tofile="captured",
+            lineterm="",
+            n=3,
+        )
+    )
+    capped = diff_lines[:_DIFF_CAP_LINES]
+    if len(diff_lines) > _DIFF_CAP_LINES:
+        capped.append(
+            f"... ({len(diff_lines) - _DIFF_CAP_LINES} more diff lines truncated)"
+        )
+    return False, "".join(capped), rc, rcc
+
+
+# ---------------------------------------------------------------------------
+# Stub-pattern library (Plan 04-03 — CONTEXT.md "Stub-pattern library").
+#
+# Four patterns, first-hit-wins ordering inside ``_check_stub_patterns``:
+#
+#   1. TOO_SMALL — log encoded length < EVIDENCE_STUB_MIN_BYTES (128)
+#   2. NO_CMD_IN_HEADER — first 3 body lines (header comments + blanks
+#      stripped) lack the cmd-first-token substring
+#   3. BARE_PASS — log body is a single ``PASS`` (or PASS|OK|✓|SUCCESS for
+#      _check_stub_patterns; ``_is_stub_pattern_bare_pass`` is PASS-only
+#      per its test contract)
+#   4. TIMESTAMP_CLUSTER — log body is predominantly timestamp-only lines
+#      (fabricated bulk pattern)
+#
+# Sub-tokens emitted via ``_check_stub_patterns`` failure_detail; the public
+# closed-vocabulary token remains ``EVIDENCE_STUB_DETECTED`` (8-token
+# allowlist preserved).
+# ---------------------------------------------------------------------------
+EVIDENCE_STUB_TOO_SMALL = "EVIDENCE_STUB_TOO_SMALL"
+EVIDENCE_STUB_NO_CMD_IN_HEADER = "EVIDENCE_STUB_NO_CMD_IN_HEADER"
+EVIDENCE_STUB_BARE_PASS = "EVIDENCE_STUB_BARE_PASS"
+EVIDENCE_STUB_TIMESTAMP_CLUSTER = "EVIDENCE_STUB_TIMESTAMP_CLUSTER"
+
+# Bare-pass regex used by _check_stub_patterns — broader than the
+# _is_stub_pattern_bare_pass helper (which is PASS-only per its test).
+# Multi-line tolerant; fires when the entire body is one acknowledgement.
+_STUB_BARE_ACK_RE = re.compile(r"^\s*(PASS|OK|✓|SUCCESS)\s*$")
+
+# Timestamp-only line: HH:MM:SS, ISO 8601 (2026-05-05T10:00:00Z), or syslog
+# (Apr  5 10:00:00). Matches a line whose entire content (after strip) is
+# a single timestamp token.
+_STUB_TIMESTAMP_LINE_RE = re.compile(
+    r"^\s*("
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?"  # ISO 8601
+    r"|\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?"                # HH:MM:SS[.ffffff]
+    r"|[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}"      # syslog: Apr  5 10:00:00
+    r")\s*$"
+)
+
+
+def _strip_header_and_blank_lines(text: str) -> list[str]:
+    """Return body lines (header `# evidence-*:` comments and blanks dropped).
+
+    Helper for stub-pattern checks that operate on "real content lines"
+    rather than the literal evidence-file bytes (which include the header
+    comment block).
+    """
+    return [
+        ln for ln in text.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def _is_stub_pattern_too_small(
+    text: str,
+    threshold: int = EVIDENCE_STUB_MIN_BYTES,
+) -> bool:
+    """Return True if ``text`` encoded byte-length is below ``threshold``.
+
+    UTF-8 encoded length is the canonical measure (matches what gets
+    committed to disk + transmitted in MCP responses). Tests pass
+    ``threshold=128`` explicitly; default mirrors ``EVIDENCE_STUB_MIN_BYTES``.
+    """
+    return len(text.encode("utf-8")) < threshold
+
+
+def _is_stub_pattern_no_cmd_in_header(
+    text: str,
+    cmd: str,
+    check_lines: int = 3,
+) -> bool:
+    """Return True if the first ``check_lines`` body lines lack the
+    cmd-first-token substring.
+
+    "Body" = output minus leading ``# evidence-*:`` header comment block
+    and blank lines. The cmd-first-token is the first whitespace-separated
+    token of ``cmd`` (e.g. ``pytest`` for ``pytest -k login``). Used as a
+    smoke signal that the captured output starts with execution of the
+    declared command rather than fabricated boilerplate.
+
+    Empty cmd ⇒ rule vacuously satisfied (returns False).
+    """
+    if not cmd:
+        return False
+    cmd_first_token = cmd.split(maxsplit=1)[0]
+    body = _strip_header_and_blank_lines(text)
+    first_n = body[:check_lines]
+    if not first_n:
+        # Empty body — TOO_SMALL territory, not NO_CMD_IN_HEADER.
+        return False
+    return not any(cmd_first_token in ln for ln in first_n)
+
+
+def _is_stub_pattern_bare_pass(text: str) -> bool:
+    """Return True iff ``text`` (after strip) is exactly ``PASS`` (PASS-only).
+
+    Test-locked semantics:
+      - ``PASS\\n`` → True
+      - ``PASS`` → True
+      - ``OK\\n`` → False (this helper is PASS-only; the broader bare-ack
+        check lives inside ``_check_stub_patterns`` via ``_STUB_BARE_ACK_RE``)
+      - ``PASS\\nsomething else here\\n`` → False
+    """
+    return text.strip() == "PASS"
+
+
+def _is_stub_pattern_timestamp_cluster(text: str) -> bool:
+    """Return True if the body is predominantly timestamp-only lines.
+
+    Heuristic: among non-blank, non-header lines, ≥80% match
+    ``_STUB_TIMESTAMP_LINE_RE`` AND there are at least 3 such lines. This
+    catches "fabricated bulk" logs that pad out to bypass the TOO_SMALL
+    threshold by repeating a timestamp shape.
+
+    CONTEXT.md describes a stricter "<1ms cluster" rule for
+    ``_check_stub_patterns``; this helper uses the broader "fabricated-bulk
+    timestamp lines" heuristic that the test fixture exercises (5 ISO
+    timestamps spaced 1s apart). Real pytest output (mixed test-name +
+    elapsed-time lines) does not trip the rule.
+    """
+    body = _strip_header_and_blank_lines(text)
+    if len(body) < 3:
+        return False
+    timestamp_lines = sum(
+        1 for ln in body if _STUB_TIMESTAMP_LINE_RE.match(ln)
+    )
+    return timestamp_lines >= 3 and timestamp_lines >= int(0.8 * len(body))
+
+
+def _check_stub_patterns(log_text: str, evidence_cmd: str) -> str | None:
+    """Run all four stub-pattern rules first-hit-wins.
+
+    Returns:
+        Sub-token name (e.g. ``EVIDENCE_STUB_TOO_SMALL``) on first hit,
+        or ``None`` when the log clears all four rules.
+
+    The caller (``verify_evidence`` / ``_verify_one_evidence_file``) wraps
+    a hit into the ``EVIDENCE_STUB_DETECTED`` public failure token with the
+    sub-token embedded in ``failure_detail`` (preserves the 8-token
+    closed vocabulary).
+
+    Order: TOO_SMALL → NO_CMD_IN_HEADER → BARE_PASS → TIMESTAMP_CLUSTER.
+    First hit wins (CONTEXT.md "Stub-pattern library — first hit wins").
+
+    Stub patterns fire ON TOP of byte-match (CONTEXT.md): even when
+    ``_compare_byte_match`` succeeds, a stub-pattern hit rejects the log.
+    """
+    # Pattern 1: TOO_SMALL
+    if _is_stub_pattern_too_small(log_text, EVIDENCE_STUB_MIN_BYTES):
+        return EVIDENCE_STUB_TOO_SMALL
+
+    # Pattern 2: NO_CMD_IN_HEADER (skip when no cmd to anchor on)
+    if evidence_cmd and _is_stub_pattern_no_cmd_in_header(
+        log_text, evidence_cmd, check_lines=3
+    ):
+        return EVIDENCE_STUB_NO_CMD_IN_HEADER
+
+    # Pattern 3: BARE_PASS / OK / ✓ / SUCCESS — broader than the
+    # _is_stub_pattern_bare_pass helper, which is PASS-only per its test.
+    body = _strip_header_and_blank_lines(log_text)
+    body_text = "\n".join(body).strip()
+    if body_text and _STUB_BARE_ACK_RE.fullmatch(body_text):
+        return EVIDENCE_STUB_BARE_PASS
+
+    # Pattern 4: TIMESTAMP_CLUSTER (predominantly timestamp-only lines)
+    if _is_stub_pattern_timestamp_cluster(log_text):
+        return EVIDENCE_STUB_TIMESTAMP_CLUSTER
+
+    return None
 
 
 # ---------------------------------------------------------------------------
