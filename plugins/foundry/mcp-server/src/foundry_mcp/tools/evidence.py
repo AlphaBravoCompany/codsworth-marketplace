@@ -105,6 +105,16 @@ _EVIDENCE_HEADER_LINE_RE = re.compile(
 )
 _EVIDENCE_HEADER_BLOCK_RE = re.compile(r"\A(?:#[^\n]*\n|[ \t]*\n)+")
 
+# Phase 5 / EVID-02 — single-source-of-truth requirement-ID regex re-used
+# from plugins/foundry/mcp-server/src/foundry_mcp/tools/foundry_handoff.py:324
+# (`req_id_pattern`). Module-level constant so artifact-side parsing
+# (this module) and prompt-side parsing (foundry_handoff.py) agree
+# byte-for-byte. Closed vocabulary: US, FR, NFR, AC, VC, IR, TR + numeric
+# ID with optional decimal (e.g., FR-2.1).
+_REQUIREMENT_ID_RE: re.Pattern[str] = re.compile(
+    r"\b(?:US|FR|NFR|AC|VC|IR|TR)-\d+(?:\.\d+)?\b"
+)
+
 
 def _parse_evidence_header(text: str) -> dict[str, Any]:
     """Parse evidence file header (leading comment block).
@@ -138,7 +148,12 @@ def _parse_evidence_header(text: str) -> dict[str, Any]:
     introducing a 9th token: closed-vocabulary discipline preserves the
     8-token allowlist locked in CONTEXT.md (Plan 04-02 SUMMARY decision).
     """
-    out: dict[str, Any] = {"cmd": None, "volatile": [], "timeout": None}
+    out: dict[str, Any] = {
+        "cmd": None,
+        "volatile": [],
+        "timeout": None,
+        "evidence_for": [],  # Phase 5 / EVID-02 — declared-order list of req IDs
+    }
     block_match = _EVIDENCE_HEADER_BLOCK_RE.match(text)
     block = block_match.group(0) if block_match else ""
     for m in _EVIDENCE_HEADER_LINE_RE.finditer(block):
@@ -165,6 +180,27 @@ def _parse_evidence_header(text: str) -> dict[str, Any]:
                     f"out of range (0, {EVIDENCE_TIMEOUT_CEILING_SECONDS}]"
                 )
             out["timeout"] = parsed
+        elif directive == "for":
+            # Phase 5 / EVID-02: parse comma-separated requirement-ID list.
+            # ``re.findall`` extracts every valid ID, tolerating whitespace,
+            # commas, semicolons, and embedded comments. Bogus tokens that
+            # don't match the regex are silently dropped — caller's set-diff
+            # against ``casting_req_ids`` surfaces the unbound requirements
+            # (Plan 05-03 territory at foundry_accept_casting).
+            #
+            # When the value is non-empty but contains zero valid IDs, raise
+            # EVIDENCE_FOR_MALFORMED — mirrors Phase 4's
+            # EVIDENCE_VOLATILE_MALFORMED raise-path for invalid timeout values.
+            #
+            # Multiple ``# evidence-for:`` lines accumulate (mirrors
+            # ``# evidence-volatile:`` multi-line discipline). De-dup is
+            # caller responsibility; declared order preserved.
+            ids = _REQUIREMENT_ID_RE.findall(raw_val)
+            if raw_val and not ids:
+                raise ValueError(
+                    f"EVIDENCE_FOR_MALFORMED: no requirement IDs found in {raw_val!r}"
+                )
+            out["evidence_for"].extend(ids)
     return out
 
 
