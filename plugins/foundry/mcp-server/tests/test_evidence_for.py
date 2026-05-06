@@ -165,9 +165,6 @@ def test_unbound_requirements_rejects_with_named_ids(
     The failure payload names exactly the unbound IDs ([FR-2, FR-3]) so
     the lead can trace which artifact is missing.
     """
-    pytest.skip(
-        "Plan 05-03 territory — coverage diff not yet wired"
-    )
     result = run_accept_casting_with_evidence(
         "evidence/evidence_log_for_partial.log",
         spec_format_version="v2.1",
@@ -189,9 +186,6 @@ def test_many_to_many_overlap_accepts(run_accept_casting_with_evidence):
     Combined coverage: FR-1 (from a), FR-2 (from both), FR-3 (from b).
     Casting cites [FR-1, FR-2, FR-3] → fully covered → accepted.
     """
-    pytest.skip(
-        "Plan 05-03 territory — many-to-many coverage union not yet wired"
-    )
     result = run_accept_casting_with_evidence(
         "evidence/evidence_log_for_overlap_a.log",
         spec_format_version="v2.1",
@@ -212,9 +206,6 @@ def test_omit_evidence_for_header_rejects(run_accept_casting_with_evidence):
     "covers everything implicitly". Permissive interpretation would make
     the gate trivially defeatable by deleting the header.
     """
-    pytest.skip(
-        "Plan 05-03 territory — strict missing-for-line rejection not yet wired"
-    )
     result = run_accept_casting_with_evidence(
         "evidence/evidence_log_for_clean.log",
         spec_format_version="v2.1",
@@ -237,11 +228,6 @@ def test_v20_legacy_bypasses_evidence_for_check(run_accept_casting_with_evidence
     binds only two MUST still report ``verdict=skipped`` + ``ok=True``
     (legacy spec, no Phase 5 enforcement).
     """
-    pytest.skip(
-        "Plan 05-03 territory — v2.0 stream-skip routing for evidence_for "
-        "not yet wired (Phase 4's stream-skip predates Phase 5; Plan 05-03 "
-        "must verify Phase 5's coverage check runs AFTER the v2.0 gate)"
-    )
     result = run_accept_casting_with_evidence(
         "evidence/evidence_log_for_clean.log",
         spec_format_version="v2.0",
