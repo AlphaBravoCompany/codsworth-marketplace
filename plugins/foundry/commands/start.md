@@ -113,7 +113,7 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
    - `plugins/foundry/agents/coverage-diff.md` (COVERAGE_DIFF)
    - **EVID-01** (virtual stream — `agent_path: null`; `min_spec_format_version: v2.1`; owned by `Foundry-Accept-Casting` / `plugins/foundry/mcp-server/src/foundry_mcp/tools/evidence.py`). Phase 4 / EVID-01 server-side evidence re-execution. Has no agent markdown file; the min-version comes from the Python constant `MIN_SPEC_FORMAT_VERSION_FOR_EVID_01 = (2, 1)` in `evidence.py` rather than from agent frontmatter.
    - `plugins/forge/agents/spec-reviewer.md` (PROBE-01)
-   - [Future: TEST-01 → `plugins/foundry/agents/spec-test-deriver.md` added by Phase 7]
+   - `plugins/foundry/agents/spec-test-deriver.md` (TEST-01)
    - [Future: INTENT-01 → `plugins/foundry/agents/intent-carrier.md` added by Phase 8]
 
    **Phase 4 / EVID-01 informational note (virtual streams):** EVID-01 is a *virtual* stream — it is not an INSPECT stream and has no agent markdown file. Its `agent_path: null` signals that the comparison logic reads `min_spec_format_version` from the Python constant `MIN_SPEC_FORMAT_VERSION_FOR_EVID_01` in `plugins/foundry/mcp-server/src/foundry_mcp/tools/evidence.py` rather than from a markdown frontmatter field. On a v2.0 spec, `verify_evidence` (called from `Foundry-Accept-Casting`) emits a `manifest.stream_skips` record matching the same schema as agent-based streams: `{"stream_id": "EVID-01", "reason": "spec_format_version", "spec_version": "v2.0", "stream_min": "v2.1", "agent_path": null}`. F0.9 sub-check 7k's existing "same hardcoded list as F0.5 step 2b" by-reference phrase covers EVID-01 automatically (no 7k prose edit needed); a missing EVID-01 record on a v2.0 spec fires `STREAM_SKIP_INCOMPLETE` exactly like a missing agent-based skip. On v2.1+ specs, EVID-01 is engaged by `Foundry-Accept-Casting`; absence of a `manifest.castings[N].evidence_provenance` array on a v2.1+ casting acceptance is itself the structural signal that EVID-01 didn't run (mirror of Phase 3's "absence of stream-skipped record on legacy spec is itself a defect" inverted — absence of a provenance record on a modern spec where one was required).
@@ -433,13 +433,14 @@ Call `Foundry-Gate(phase='cast')`.
 4. Even on `ok: true`, YOU must verify each AC has a corresponding artifact in the completion report.
 5. `Foundry-Handoff(event="teammate_to_accepted", ...)` to record acceptance.
 
-### F2: INSPECT (up to 7 parallel streams)
+### F2: INSPECT (up to 8 parallel streams)
 
 - **TRACE** — agent with `agents/tracer.md` (sonnet). Upstream wiring: EXISTS → SUBSTANTIVE → WIRED → PLACED.
 - **FLOW_TRACE** — V3 only, when `flow-delta.json` exists. Agent with `agents/flow-tracer.md` (sonnet). Downstream wiring: PRODUCED → CONSUMES_UPSTREAM → SUBSTANTIVE → CHAIN_INTACT. Pairs with TRACE to cover both directions. Primary catcher of "endpoint exists but is disconnected from its declared upstream" — the exact failure V3 is engineered to prevent.
 - **PROVE** — agent with `agents/assayer.md` (opus). Spec-before-code + stub detection + research compliance.
 - **RESEARCH_AUDIT** — agent with `agents/research-auditor.md` (sonnet). Verifies code honors research. Skip if no research + no Informational items.
 - **COVERAGE_DIFF** — MIGRATION only. Agent with `agents/coverage-diff.md` (sonnet). 1:1 source → destination check.
+- **TEST-01** — agent with `agents/spec-test-deriver.md` (sonnet, code-blind). Reads spec only; derives hypothesis-jsonschema strategies from TYPE-01 contracts table; runs generated tests in ephemeral worktree; emits findings to `test_observations/test-deriver-cycle-{N}.json`. ASSAY (F4) routes via 5th parallel agent (`agents/test-observations-adjudicator.md`).
 - **SIGHT** — lead runs Playwright directly (only exception to "lead never does work").
 - **TEST / PROBE** — inline test suite / API smoke.
 
@@ -463,7 +464,11 @@ If a teammate says "this defect requires a spec change": halt, log `SPEC_CHANGE_
 
 ### F4: ASSAY
 
-Split requirements into 4 groups → spawn 4 parallel `foundry:assayer` agents (frontmatter sets model=opus + effort=max). Each reads spec FIRST, forms expectations, THEN reads code. Merge verdicts via `Foundry-Verdict`. All VERIFIED → F5/F5.5/F6. Any non-VERIFIED → F3 → F2 → F4.
+Split requirements into 4 groups → spawn 4 parallel `foundry:assayer` agents (frontmatter sets model=opus + effort=max). Each reads spec FIRST, forms expectations, THEN reads code.
+
+**If `test_observations/test-deriver-cycle-{N}.json` exists for the current cycle (Phase 7 / TEST-01)**: spawn a 5th parallel agent — `agents/test-observations-adjudicator.md` (opus + effort=max). It runs `validate-test-observations.py` against the channel file (rejects schema/header/source-leak/wrong-test-pattern violations), then for each pattern-clean FAIL observation classifies a verdict from the closed vocabulary `KNOWN_TEST_OBSERVATION_VERDICTS = {DEFECT, WRONG_TEST, INCONCLUSIVE}`. Routing rule: `status: FAIL` + wrong-test patterns clean → `DEFECT` (route to GRIND with `# defect-source: TEST-01 OBS-NNN` annotation); any wrong-test pattern hit → `WRONG_TEST` (logged for next-cycle drop, NOT routed); `status: ERROR` or `SKIP` → `WRONG_TEST`; `status: PASS` → not routed. Adjudicator appends an `assay_verdict` field per observation to the source JSON. Backwards compat: if the channel file does NOT exist for the current cycle (v2.0 spec stream-skip case, or TEST-01 disabled), the 5th parallel agent is NOT spawned — only the 4 default assayer agents run; Phase 4/5/6 byte-equivalent semantics preserved.
+
+Merge all verdicts via `Foundry-Verdict`. All VERIFIED + zero TEST-01 DEFECT routings → F5/F5.5/F6. Any non-VERIFIED OR any TEST-01 DEFECT → F3 → F2 → F4.
 
 ### F5: TEMPER (--temper only)
 

@@ -11,6 +11,15 @@ Adversarial final-gate verification agent. Your job is to **FAIL** this casting 
 to find every way the implementation does not fully satisfy the spec. Uses
 spec-before-code methodology to prevent rationalization bias.
 
+> **Phase 7 / TEST-01 (test_observations channel) is delegated** to
+> `agents/test-observations-adjudicator.md` (5th parallel ASSAY agent;
+> closed-vocab `KNOWN_TEST_OBSERVATION_VERDICTS = {DEFECT, WRONG_TEST,
+> INCONCLUSIVE}`). The 4 default `foundry:assayer` agents adjudicate
+> production code against requirements; the 5th agent adjudicates
+> spec-anchored failing tests against the spec. Phase 4/5/6
+> closed-vocab discipline (VERIFIED/MISPLACED/HOLLOW/etc.) on this
+> agent is byte-equivalent — no change.
+
 ## Role
 
 **You are adversarial, not collaborative.** You are not here to verify the work of
