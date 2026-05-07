@@ -45,6 +45,7 @@ from foundry_mcp.tools.foundry_handoff import (
 )
 from foundry_mcp.tools.foundry_spawn import foundry_cast_wave, foundry_spawn_teammate
 from foundry_mcp.tools.foundry_validate import foundry_validate_castings
+from foundry_mcp.tools.intent_coverage import foundry_intent_coverage
 from foundry_mcp.tools.validation import validate_report
 
 # Global project root, set via CLI arg
@@ -254,6 +255,19 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="Foundry-Validate-Castings",
             description="Validate castings against spec across 9 dimensions before CAST. Includes Prompt Fidelity (with <global_invariants> propagation), Migration Coverage, and Spec Structure (tagged requirement IDs + optional global_invariants section). Returns pass/fail with revision hints.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="Foundry-Intent-Coverage",
+            description=(
+                "Validate intent-coverage.json (Phase 8 / INTENT-01) against the "
+                "transcript-in-spec-appendix and emitted casting prompts. Runs at "
+                "F0.7 between F0.5 DECOMPOSE and F0.9 VALIDATE. Returns "
+                "{passed, dropped_answers, paraphrased_answers, propagated_count, "
+                "matrix_path}. On any DROPPED, returns {action: 'redecompose'} "
+                "with the missing A-NNN list as re-decompose guidance — never "
+                "amends casting prompts in place."
+            ),
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
@@ -471,6 +485,7 @@ _DISPATCH = {
         items_total=args.get("items_total", 0), findings_count=args.get("findings_count", 0),
         project_root=_project_root),
     "Foundry-Validate-Castings": lambda args: foundry_validate_castings(project_root=_project_root),
+    "Foundry-Intent-Coverage": lambda args: foundry_intent_coverage(project_root=_project_root),
     "Foundry-Spawn-Teammate": lambda args: foundry_spawn_teammate(
         casting_id=args["casting_id"], phase=args.get("phase", "cast"), project_root=_project_root),
     "Foundry-Cast-Wave": lambda args: foundry_cast_wave(
