@@ -599,7 +599,14 @@ def test_f05_step2b_lists_intent_carrier() -> None:
     if not START_MD.exists():
         pytest.skip("start.md missing")
     text = START_MD.read_text(encoding="utf-8")
-    if "intent-carrier.md" not in text:
+    # Plan 08-04 territory skip: while the ``[Future: INTENT-01 → ...]``
+    # placeholder remains in start.md, Plan 08-04's roster activation has
+    # not landed. Note: the placeholder text itself contains
+    # ``intent-carrier.md`` literal, so the prior ``"intent-carrier.md" not
+    # in text`` skip predicate never triggers; predicate flipped to the
+    # placeholder-presence check (Plan 08-02 Rule 3 deviation, see
+    # 08-02-SUMMARY.md).
+    if "[Future: INTENT-01" in text:
         pytest.skip(
             "intent-carrier.md not yet wired into F0.5 step 2b — "
             "Plan 08-04 territory",
