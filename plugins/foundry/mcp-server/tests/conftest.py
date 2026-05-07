@@ -998,3 +998,73 @@ def mock_uvx_subprocess(
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
     return recorded
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 / INTENT-01 fixtures
+#
+# Append-only extension mirroring Phase 7's run_test_observations_validator
+# shape verbatim. The validator script (validate-intent-coverage.py) lands
+# in Plan 08-02; until then, the fixture pytest.skip()s the calling test
+# at fixture-acquire time. Module-top guard inside test_intent_coverage.py
+# ALSO skips at module level when the script is missing — defense-in-depth.
+# ---------------------------------------------------------------------------
+
+VALIDATE_INTENT_COVERAGE_PATH = (
+    # tests/conftest.py -> parents: [0]=tests, [1]=mcp-server, [2]=foundry,
+    # [3]=plugins, [4]=repo-root. Mirrors VALIDATE_TEST_OBSERVATIONS_PATH
+    # depth — Phase 7 STATE.md noted parents[3] vs parents[4] confusion;
+    # parents[4] is the verified-working form for this conftest layout.
+    Path(__file__).resolve().parents[4]
+    / "plugins" / "foundry" / "scripts" / "validate-intent-coverage.py"
+)
+
+
+@pytest.fixture
+def run_intent_coverage_validator(
+    tmp_path: Path,
+) -> Callable[..., tuple[int, str, str]]:
+    """Invoke ``validate-intent-coverage.py`` via subprocess.
+
+    Plan 08-01 ships the SKIP stub: until ``validate-intent-coverage.py``
+    exists on disk (Plan 08-02 territory), tests requesting this fixture
+    SKIP cleanly. Once the validator script lands, the runner kicks in
+    with no edits to test_intent_coverage.py — mirrors Plan 07-01's
+    ``run_test_observations_validator`` precedent (signature locked
+    in Wave-0; body activates when downstream plan ships).
+
+    Mirrors Phase 7 ``run_test_observations_validator`` shape:
+    subprocess.run with capture_output=True + text=True + timeout=30 +
+    check=False; returns ``(exit_code, stdout, stderr)``.
+    """
+    if not VALIDATE_INTENT_COVERAGE_PATH.exists():
+        pytest.skip(
+            "validate-intent-coverage.py not yet shipped — "
+            "Plan 08-02 territory",
+        )
+
+    def _runner(
+        coverage_path: Path,
+        *,
+        spec_path: Path | None = None,
+        tool_call_log_path: Path | None = None,
+    ) -> tuple[int, str, str]:
+        argv: list[str] = [
+            "python3",
+            str(VALIDATE_INTENT_COVERAGE_PATH),
+            str(coverage_path),
+        ]
+        if spec_path is not None:
+            argv.extend(["--spec", str(spec_path)])
+        if tool_call_log_path is not None:
+            argv.extend(["--tool-call-log", str(tool_call_log_path)])
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    return _runner
