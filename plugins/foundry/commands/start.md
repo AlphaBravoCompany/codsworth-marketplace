@@ -114,7 +114,7 @@ After codebase-mapping (or F0 RESEARCH if codebase-mapping was skipped), and bef
    - **EVID-01** (virtual stream — `agent_path: null`; `min_spec_format_version: v2.1`; owned by `Foundry-Accept-Casting` / `plugins/foundry/mcp-server/src/foundry_mcp/tools/evidence.py`). Phase 4 / EVID-01 server-side evidence re-execution. Has no agent markdown file; the min-version comes from the Python constant `MIN_SPEC_FORMAT_VERSION_FOR_EVID_01 = (2, 1)` in `evidence.py` rather than from agent frontmatter.
    - `plugins/forge/agents/spec-reviewer.md` (PROBE-01)
    - `plugins/foundry/agents/spec-test-deriver.md` (TEST-01)
-   - [Future: INTENT-01 → `plugins/foundry/agents/intent-carrier.md` added by Phase 8]
+   - `plugins/foundry/agents/intent-carrier.md` (INTENT-01)
 
    **Phase 4 / EVID-01 informational note (virtual streams):** EVID-01 is a *virtual* stream — it is not an INSPECT stream and has no agent markdown file. Its `agent_path: null` signals that the comparison logic reads `min_spec_format_version` from the Python constant `MIN_SPEC_FORMAT_VERSION_FOR_EVID_01` in `plugins/foundry/mcp-server/src/foundry_mcp/tools/evidence.py` rather than from a markdown frontmatter field. On a v2.0 spec, `verify_evidence` (called from `Foundry-Accept-Casting`) emits a `manifest.stream_skips` record matching the same schema as agent-based streams: `{"stream_id": "EVID-01", "reason": "spec_format_version", "spec_version": "v2.0", "stream_min": "v2.1", "agent_path": null}`. F0.9 sub-check 7k's existing "same hardcoded list as F0.5 step 2b" by-reference phrase covers EVID-01 automatically (no 7k prose edit needed); a missing EVID-01 record on a v2.0 spec fires `STREAM_SKIP_INCOMPLETE` exactly like a missing agent-based skip. On v2.1+ specs, EVID-01 is engaged by `Foundry-Accept-Casting`; absence of a `manifest.castings[N].evidence_provenance` array on a v2.1+ casting acceptance is itself the structural signal that EVID-01 didn't run (mirror of Phase 3's "absence of stream-skipped record on legacy spec is itself a defect" inverted — absence of a provenance record on a modern spec where one was required).
 
@@ -355,6 +355,42 @@ When the spec references a flow delta, decomposition becomes **deterministic** �
 
 **What changes in `<spec_requirements>` vs V2:** in V3 there is no `<spec_requirements>` block. The structural blocks above (`<upstream_anchor>`, `<prerequisite_hops>`, `<this_hop>`, `<downstream_contract>`, `<self_check>`) replace it. The teammate has NO end-state description in its attention — only the hop contract. This is the entire V3 reversal: end-state framing causes backward fabrication, packet-mode prompts prevent it.
 
+### F0.7: INTENT-CARRIER (Phase 8 / INTENT-01)
+
+**Skip condition:** spec_format_version v2.0 (legacy) — manifest.stream_skips
+already contains the INTENT-01 record from F0.5 step 2b enumeration; F0.7 is a
+no-op; orchestrator transitions directly to F0.9 VALIDATE.
+
+**Procedure (V2 mode, spec_format_version v2.1+):**
+
+1. Spawn the intent-carrier agent (model: opus, effort: max). Pass it the
+   manifest path + spec.md path verbatim. Tool allowlist Read/Write/Grep/Glob
+   (NO Bash, NO Edit, NO Task — defense against in-place casting-prompt
+   amendment AND against embedding/fuzzy-overlap shortcut tools).
+2. Agent reads `foundry-archive/{run}/spec.md`; parses A-NNN ∪ A-AUTO-NNN
+   from the `## Appendix: Interview Transcript` block; reads every
+   `foundry-archive/{run}/castings/casting-{id}-prompt.md` enumerated by
+   `manifest.castings[].id`; constructs the verdict matrix; writes
+   `foundry-archive/{run}/intent-coverage.json` (closed schema —
+   KNOWN_INTENT_COVERAGE_KEYS / KNOWN_CELL_KEYS / KNOWN_INTENT_COVERAGE_VERDICTS
+   frozensets enforced by validate-intent-coverage.py).
+3. Lead invokes `Foundry-Intent-Coverage` MCP tool. Tool runs
+   `validate-intent-coverage.py intent-coverage.json --spec spec.md
+   [--tool-call-log <agent-log>]` (advisory tool-call-log shape per Phase 7
+   precedent — only passed when orchestrator has a captured log).
+4. **On exit 0 (zero DROPPED):** tool stamps `.f07-intent-clean` marker;
+   appends `manifest.intent_coverage_summary` field; orchestrator transitions
+   to F0.9 VALIDATE.
+5. **On any DROPPED:** tool returns `{action: "redecompose", dropped_answers:
+   [...], redecompose_hints: [{answer_id, suggested_casting, citation_chain}]}`;
+   orchestrator routes lead BACK to F0.5 DECOMPOSE with the missing A-NNN list
+   as re-decompose guidance. NEVER amends casting prompts in place. Loop until
+   intent-coverage clears.
+
+Call `Foundry-Gate(phase='intent_coverage')` to enter F0.7. Call
+`Foundry-Intent-Coverage` to run the gate. Call `Foundry-Gate(phase='validate')`
+on intent-coverage pass to transition to F0.9.
+
 ### F0.9: VALIDATE
 
 Call `Foundry-Validate-Castings` — runs 10 dimensions:
@@ -383,6 +419,14 @@ Call `Foundry-Validate-Castings` — runs 10 dimensions:
      Diagnostic precision over composite check (mirrors 7h / 7i / 7j pattern): a failure here pinpoints exactly which stream's record is wrong rather than emitting a single "stream-skip propagation failed" composite. Runs uniformly for V2 and V3 (V3 specs carry their own `spec_format_version` on the compatibility-layer `spec.md`).
 
      **Drift discipline (RESEARCH.md Pitfall 7):** sub-check 7k uses the IDENTICAL hardcoded roster + IDENTICAL default-version-v2.0 + IDENTICAL tuple-compare semantics as F0.5 step 2b. If those drift, 7k either false-positives or false-negatives in lock-step with F0.5's emission bug. The roster appears in two places by design (defense-in-depth via re-derivation); a regression test in `plugins/forge/tests/test_versioned_spec_format.py` (`test_f05_step_2b_and_f09_7k_reference_same_roster`) asserts both prose blocks list the same agent-path set OR sub-check 7k uses an explicit "same hardcoded list as F0.5 step 2b" by-reference phrase.
+
+   - **7m. `intent-coverage.json` present when INTENT-01 not stream-skipped (Phase 8 / INTENT-01).**
+     Re-derive the version-gated agent roster using the **same hardcoded list as F0.5 step 2b**
+     (cross-plugin); recompute the expected skip set against `manifest.spec_format_version_tuple`;
+     if INTENT-01 is NOT in the recomputed skip set, assert `foundry-archive/{run}/intent-coverage.json`
+     exists AND `manifest.intent_coverage_summary` is populated. Absence on a v2.1+ spec is itself
+     a defect — fires `INTENT_COVERAGE_RECORD_INCOMPLETE`. By-reference to 7k's roster derivation
+     (defense-in-depth via re-derivation, not roster duplication).
 
 8. **Migration Coverage** — MIGRATION specs only; 1:1 coverage_list
 9. **Spec Structure** — spec has tagged req IDs (error); spec has `## Global Invariants` section (warning)

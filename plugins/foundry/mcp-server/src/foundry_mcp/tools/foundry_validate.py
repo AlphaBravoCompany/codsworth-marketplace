@@ -539,6 +539,47 @@ def foundry_validate_castings(
             "and propagate manifest.mandatory_rules byte-identical to every casting prompt."
         )
 
+    # Sub-check 7m (Phase 8 / INTENT-01): intent-coverage.json present when
+    # INTENT-01 not stream-skipped. Mirror of sub-check 7k's stream_skips
+    # re-derivation discipline applied at the file-presence + manifest-summary
+    # level. By-reference to 7k's roster derivation: if INTENT-01 is NOT in
+    # manifest.stream_skips (i.e., the F0.5 step 2b roster routed it as an
+    # active stream on a v2.1+ spec), F0.7 must have produced the matrix —
+    # absence is itself a defect that fires INTENT_COVERAGE_RECORD_INCOMPLETE.
+    # Defense-in-depth: 7k validates the roster derivation; 7m validates that
+    # the active streams actually emitted their artifacts.
+    intent_in_skips = any(
+        (s.get("stream_id") if isinstance(s, dict) else None) == "INTENT-01"
+        for s in manifest.get("stream_skips", []) or []
+    )
+    if not intent_in_skips:
+        intent_coverage_path = fdir / "intent-coverage.json"
+        if not intent_coverage_path.exists():
+            dim7_issues.append({
+                "issue": "intent_coverage_record_incomplete",
+                "detail": (
+                    f"INTENT_COVERAGE_RECORD_INCOMPLETE: intent-coverage.json missing at "
+                    f"{intent_coverage_path}; INTENT-01 not in manifest.stream_skips so "
+                    f"the F0.7 stream should have produced the matrix"
+                ),
+            })
+            revision_hints.append(
+                "INTENT_COVERAGE_RECORD_INCOMPLETE: re-run F0.7 INTENT-CARRIER to produce "
+                "intent-coverage.json. INTENT-01 is an active stream on this spec_format_version."
+            )
+        elif "intent_coverage_summary" not in manifest:
+            dim7_issues.append({
+                "issue": "intent_coverage_record_incomplete",
+                "detail": (
+                    "INTENT_COVERAGE_RECORD_INCOMPLETE: intent-coverage.json present but "
+                    "manifest.intent_coverage_summary missing; F0.7 marker stamping incomplete"
+                ),
+            })
+            revision_hints.append(
+                "INTENT_COVERAGE_RECORD_INCOMPLETE: re-run Foundry-Intent-Coverage to stamp "
+                ".f07-intent-clean marker and append manifest.intent_coverage_summary."
+            )
+
     dim7_ok = len(dim7_issues) == 0
     if not dim7_ok:
         issues.append({
