@@ -878,3 +878,123 @@ def run_accept_casting_with_evidence(tmp_path, fixtures_dir):
         }
 
     return _run
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 / TEST-01 fixtures
+#
+# Two append-only fixtures driving the Phase 7 spec-derived test stream tests
+# in tests/test_spec_test_deriver.py. Mirrors Phase 6 plugins/forge/tests/
+# test_spec_review.py's _run_validator helper shape and Phase 4
+# run_accept_casting_with_evidence's RED-or-SKIP discipline (signature
+# locked here in Plan 07-01; fixture body wires up automatically once
+# Plan 07-02 ships the validator script).
+# ---------------------------------------------------------------------------
+
+VALIDATE_TEST_OBSERVATIONS_PATH = (
+    # tests/conftest.py -> parents: [0]=tests, [1]=mcp-server, [2]=foundry,
+    # [3]=plugins, [4]=repo-root.
+    Path(__file__).resolve().parents[4]
+    / "plugins" / "foundry" / "scripts" / "validate-test-observations.py"
+)
+
+
+@pytest.fixture
+def run_test_observations_validator(
+    tmp_path: Path,
+) -> Callable[..., tuple[int, str, str]]:
+    """Invoke ``validate-test-observations.py`` via subprocess.
+
+    Plan 07-01 ships the SKIP stub: until ``validate-test-observations.py``
+    exists on disk (Plan 07-02 territory), tests requesting this fixture
+    SKIP cleanly. Once the validator script lands, the runner kicks in
+    with no edits to test_spec_test_deriver.py — mirrors Plan 03-01's
+    ``run_f05_decompose_with_test_roster`` precedent (signature locked
+    in Wave-0; body activates when downstream plan ships).
+
+    Mirrors Phase 6 plugins/forge/tests/test_spec_review.py:_run_validator
+    shape: subprocess.run with capture_output=True + text=True + timeout=30 +
+    check=False; returns ``(exit_code, stdout, stderr)``.
+    """
+    if not VALIDATE_TEST_OBSERVATIONS_PATH.exists():
+        pytest.skip(
+            "validate-test-observations.py not yet shipped — "
+            "Plan 07-02 territory",
+        )
+
+    def _runner(
+        observation_path: Path,
+        *,
+        spec_path: Path | None = None,
+        tool_call_log_path: Path | None = None,
+    ) -> tuple[int, str, str]:
+        argv: list[str] = [
+            "python3",
+            str(VALIDATE_TEST_OBSERVATIONS_PATH),
+            str(observation_path),
+        ]
+        if spec_path is not None:
+            argv.extend(["--spec", str(spec_path)])
+        if tool_call_log_path is not None:
+            argv.extend(["--tool-call-log", str(tool_call_log_path)])
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    return _runner
+
+
+@pytest.fixture
+def mock_uvx_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Any]:
+    """Intercept ``subprocess.run`` for ``uvx`` invocations.
+
+    Plan 07-03 territory tests assert that the spec-test-deriver agent
+    wrapper calls ``uvx --from hypothesis-jsonschema --with hypothesis
+    python -m pytest ...`` shape correctly. This fixture monkeypatches
+    ``subprocess.run`` so any invocation whose first cmd-token contains
+    ``"uvx"`` is intercepted: a synthetic empty-observations JSON is
+    returned and the cmd is recorded under ``recorded["calls"]``.
+    Non-uvx subprocess.run calls pass through to the real implementation
+    unchanged (so git, python imports, etc. still work).
+
+    Returns a dict with ``calls`` key (list of recorded cmd lists).
+    """
+    recorded: dict[str, Any] = {"calls": []}
+    _real_run = subprocess.run
+
+    def _fake_run(
+        *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else kwargs.get("args", [])
+        recorded["calls"].append(cmd)
+        if isinstance(cmd, list) and cmd and "uvx" in str(cmd[0]):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "stream": "TEST-01",
+                        "cycle": 1,
+                        "spec_format_version": "v2.1",
+                        "spec_hash": "sha256:stub",
+                        "agent_path": (
+                            "plugins/foundry/agents/spec-test-deriver.md"
+                        ),
+                        "wall_clock_seconds": 0.0,
+                        "uvx_subprocess_seconds": 0.0,
+                        "observations": [],
+                    }
+                ),
+                stderr="",
+            )
+        return _real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    return recorded
