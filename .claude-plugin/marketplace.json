@@ -25,6 +25,16 @@
       "author": {
         "name": "AlphaBravo"
       }
+    },
+    {
+      "name": "adhoc",
+      "source": "./plugins/adhoc",
+      "description": "Stops Claude from racing on ad-hoc work. Always-on UserPromptSubmit hook injects a methodical pre-response checklist every turn — restate the task, mark assumptions VERIFIED/UNVERIFIED, cite CLAUDE.md and memory rules in play, surface alternatives, confirm before editing. /adhoc:casual skips one turn, /adhoc:off silences the session, /adhoc:deep runs a heavier analysis pass, and the second-opinion subagent provides independent fresh-context critique.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "author": {
+        "name": "AlphaBravo"
+      }
     }
   ]
 }
