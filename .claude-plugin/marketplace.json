@@ -30,7 +30,7 @@
       "name": "adhoc",
       "source": "./plugins/adhoc",
       "description": "Stops Claude from racing on ad-hoc work. Always-on UserPromptSubmit hook injects a methodical pre-response checklist every turn — restate the task, mark assumptions VERIFIED-DIRECT/UNVERIFIED (subagent reports do NOT count as verification), cite CLAUDE.md and memory rules in play, surface alternatives, run a citation check, confirm before editing. Plus a Stop hook that mechanically blocks responses with file:line citations Claude did not Read in the same turn — catching the subagent-summary-laundered claims that preamble nudges miss. /adhoc:casual skips one turn, /adhoc:off silences the session, /adhoc:citations-on/off toggles the citation hook, /adhoc:deep runs a heavier analysis pass, and the second-opinion subagent provides independent fresh-context critique.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "category": "productivity",
       "author": {
         "name": "AlphaBravo"

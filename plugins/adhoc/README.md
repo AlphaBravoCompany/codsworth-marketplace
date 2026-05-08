@@ -189,6 +189,10 @@ rm -f ~/.claude/.adhoc-state ~/.claude/.adhoc-citations-mode ~/.claude/.adhoc-ci
 
 ## Changelog
 
+### v0.1.3
+
+- **Hedge-language audit.** New closing rule in the preamble flags words like *probably / likely / typically / generally / usually / in this kind of project / I'd expect / common pattern / should be / tends to / by convention* as tripwires for unverified inference. When any of these appear in a substantive claim about the current codebase, Claude must either (a) Read/Grep to convert the hedge into a specific evidenced claim, or (b) explicitly downgrade with a disclosure ("I haven't Read this — I'm inferring; want me to verify first?"). Catches the failure mode that slips under the citation Stop hook — confident-shaped answers built on training-data pattern-matching when no specific `file:line` citations are made.
+
 ### v0.1.2
 
 - **TLDR by default.** Added a closing rule to the preamble: lead with the answer in 3–6 lines or a few key bullets, expand to full structured analysis (tables, multi-section breakdowns, code walks, exhaustive caveats) only when the user explicitly asks ("walk me through", "full breakdown", "long form") or when the task itself is a comparison / design / decision that genuinely needs the structure. The methodical checklist (steps 1–6) becomes internal scaffolding to think clearly, not a template imposed on every visible response.
