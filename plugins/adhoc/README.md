@@ -189,6 +189,10 @@ rm -f ~/.claude/.adhoc-state ~/.claude/.adhoc-citations-mode ~/.claude/.adhoc-ci
 
 ## Changelog
 
+### v0.1.2
+
+- **TLDR by default.** Added a closing rule to the preamble: lead with the answer in 3–6 lines or a few key bullets, expand to full structured analysis (tables, multi-section breakdowns, code walks, exhaustive caveats) only when the user explicitly asks ("walk me through", "full breakdown", "long form") or when the task itself is a comparison / design / decision that genuinely needs the structure. The methodical checklist (steps 1–6) becomes internal scaffolding to think clearly, not a template imposed on every visible response.
+
 ### v0.1.1
 
 - **Tightened the preamble's evidence rule.** Step 2 now distinguishes `VERIFIED-DIRECT` (you Read it yourself in this turn) from `UNVERIFIED` (anything else, including subagent summaries). Subagent reports — `Explore`, `Task`, etc. — explicitly **do not** count as verification, since their internal reads happen in a separate context and their summaries can paraphrase, miss reservations, or hallucinate line numbers.
