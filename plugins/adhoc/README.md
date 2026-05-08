@@ -1,6 +1,8 @@
 # adhoc — methodical-mode for Claude Code
 
-> **Stops Claude from racing.** An always-on UserPromptSubmit hook injects a methodical pre-response checklist into every turn — restate the task, mark assumptions VERIFIED or UNVERIFIED, cite CLAUDE.md and memory rules in play, surface alternatives, confirm before editing.
+> **Stops Claude from racing.** An always-on UserPromptSubmit hook injects a methodical pre-response checklist into every turn — restate the task, mark assumptions VERIFIED-DIRECT or UNVERIFIED, cite CLAUDE.md and memory rules in play, surface alternatives, run a citation check, confirm before editing.
+>
+> **And mechanically catches what nudges miss.** A Stop hook scans every response for file:line citations and blocks any response that cites a file Claude did not Read in the same turn — catching the subagent-summary-laundered claims that preamble rules miss.
 
 Forge plans. Foundry builds. **adhoc thinks before it answers.**
 
@@ -22,23 +24,29 @@ adhoc fixes it the only way that actually works: **at the runtime, not the promp
 
 ## What it does
 
-A `UserPromptSubmit` hook fires before Claude sees your message. The hook emits a methodical preamble that becomes part of the prompt context. Claude must walk the checklist out loud (briefly) before answering.
+Two complementary hooks:
+
+**1. `UserPromptSubmit` hook (the nudge).** Fires before Claude sees your message. Emits a methodical preamble that becomes part of the prompt context. Claude must walk the checklist briefly before answering.
 
 ```
 [adhoc:methodical-mode active]
 
-1. RESTATE       — One-sentence statement of what's being asked. Ask if ambiguous.
-2. ASSUMPTIONS   — List them. Mark VERIFIED (you checked) or UNVERIFIED (inferring).
-                   Don't proceed on UNVERIFIED for non-trivial work.
-3. RULES         — Cite any CLAUDE.md / memory rule that applies, by name.
-4. ALTERNATIVES  — Surface 2 approaches with tradeoffs before recommending.
-5. CONFIRM       — Multi-file or hard-to-revert? Plan first, wait for ack.
+1. RESTATE          — One-sentence statement of what's being asked. Ask if ambiguous.
+2. ASSUMPTIONS      — Mark VERIFIED-DIRECT (you Read it) or UNVERIFIED.
+                      Subagent reports do NOT count as verification.
+3. RULES            — Cite any CLAUDE.md / memory rule that applies, by name.
+4. ALTERNATIVES     — Surface 2 approaches with tradeoffs before recommending.
+5. CITATION CHECK   — List every file:line / signature / enum claim. Confirm
+                      a Read or Grep happened in this turn. If not — Read now.
+6. CONFIRM          — Multi-file or hard-to-revert? Plan first, wait for ack.
 
 Default disposition: methodical over fast.
 A wrong answer delivered quickly is still a wrong answer.
 ```
 
-That's the whole engine. Everything else is escape hatches and heavier modes.
+**2. `Stop` hook (the enforcement).** Fires when Claude finishes its response, before you see it. Scans for `path/to/file.ext:NUMBER` citations and cross-checks against this turn's `Read` / `Grep` tool calls. If any cited file wasn't Read or Grep'd by Claude directly in this turn, the hook **blocks the response** — Claude must Read the file (or remove the claim) before stopping. Subagent (Task / Agent) calls do **not** count as verification, since their internal Reads happen in a separate context — that's the failure mode this catches.
+
+The preamble shapes the response; the Stop hook verifies it. Together: belt and suspenders against confident-wrong code citations.
 
 ---
 
@@ -57,12 +65,16 @@ After install, every new conversation runs methodical-mode by default. No furthe
 
 | Command | Effect |
 |---|---|
-| `/adhoc:status` | Show current state (`on` / `off` / `casual`) |
-| `/adhoc:on` | Re-enable methodical-mode for this session |
-| `/adhoc:off` | Silence methodical-mode for the rest of this session |
-| `/adhoc:casual` | Skip methodical-mode for the **next single turn** — auto-reverts to on |
+| `/adhoc:status` | Show current state of both hooks |
+| `/adhoc:on` | Re-enable methodical-mode preamble for this session |
+| `/adhoc:off` | Silence methodical-mode preamble for the rest of this session |
+| `/adhoc:casual` | Skip methodical-mode preamble for the **next single turn** — auto-reverts |
+| `/adhoc:citations-on` | Re-enable the Stop-hook citation verifier (default mode) |
+| `/adhoc:citations-off` | Disable the Stop-hook citation verifier |
 | `/adhoc:deep` | Run a heavier methodical analysis pass (read-only skill) |
 | `/adhoc:help` | Inline reference |
+
+The two hooks have **independent toggles**. `/adhoc:off` silences the preamble but the citation verifier keeps enforcing. `/adhoc:citations-off` disables the verifier but the preamble keeps firing. Different problems, different switches.
 
 ---
 
@@ -110,15 +122,26 @@ Use it before merging a non-trivial PR you authored with Claude, or any time the
 
 ## State management
 
-State is stored in a single file: `~/.claude/.adhoc-state`
+Two state files, one per hook:
 
-| File contents | Behavior |
+**`~/.claude/.adhoc-state`** — methodical-mode preamble:
+
+| Contents | Behavior |
 |---|---|
 | absent | methodical-mode **on** (default) |
 | `off` | silenced for the session |
 | `casual` | skipped on the next prompt, then auto-deleted (one-turn release valve) |
 
-The toggle commands write/delete this file. The hook reads it before deciding whether to inject. No daemons, no background state.
+**`~/.claude/.adhoc-citations-mode`** — Stop-hook citation verifier:
+
+| Contents | Behavior |
+|---|---|
+| absent / `default` | verifier **on** — blocks responses with unverified file:line citations |
+| `off` | verifier disabled |
+
+**`~/.claude/.adhoc-citations-log.jsonl`** — append-only log of every citation check (pass or block). Each line records timestamp, session ID, citations found, paths verified in the turn, and the decision. Useful for tuning the regex against real false-positive blocks if any surface in practice.
+
+The toggle commands write/delete these files. The hooks read them before firing. No daemons, no background state.
 
 ---
 
@@ -135,11 +158,23 @@ Don't disable it because the preamble feels chatty. **That's the working state.*
 
 ## Tuning
 
-Three knobs you might want later:
+Knobs you might want later:
 
 1. **The preamble itself** — `scripts/inject.sh`. Wording is opinionated. Soften, sharpen, or shorten to taste.
-2. **Always-on default** — to flip to off-by-default, change the script to require an opt-in state file instead of treating absence as on.
-3. **Project-scoped state** — currently `~/.claude/.adhoc-state` is global across all projects. Swap to `${CLAUDE_PROJECT_DIR}/.adhoc-state` in the script for per-project state.
+2. **The citation regex** — `scripts/check-citations.py`. Currently tier A only (`path/to/file.ext:NUMBER`). The `CITATION_RE` and `CODE_EXT` constants are the dials. To extend to bare paths or function signatures, add tiers and tests.
+3. **False-positive log** — tail `~/.claude/.adhoc-citations-log.jsonl` after a week of real use. Any blocks against citations that turned out correct are signals to refine the regex.
+4. **Always-on default** — to flip the preamble to off-by-default, change `inject.sh` to require an opt-in state file instead of treating absence as on.
+5. **Project-scoped state** — `~/.claude/.adhoc-state` and `~/.claude/.adhoc-citations-mode` are global. Swap to `${CLAUDE_PROJECT_DIR}/.adhoc-...` in the scripts for per-project state.
+
+## Tests
+
+Offline test suite for the citation hook:
+
+```
+python3 plugins/adhoc/tests/test_check_citations.py
+```
+
+10 cases cover: the original Shiro-style failure, clean responses, citations in fenced code blocks, subagent-only Reads (the key failure mode), diff-line markers, bare path mentions, off-mode short-circuit, stop-hook-active loop avoidance, Grep verification, and log-write behavior. All ten pass on a clean install.
 
 ---
 
@@ -147,8 +182,25 @@ Three knobs you might want later:
 
 ```
 /plugin uninstall adhoc@codsworth
-rm -f ~/.claude/.adhoc-state
+rm -f ~/.claude/.adhoc-state ~/.claude/.adhoc-citations-mode ~/.claude/.adhoc-citations-log.jsonl
 ```
+
+---
+
+## Changelog
+
+### v0.1.1
+
+- **Tightened the preamble's evidence rule.** Step 2 now distinguishes `VERIFIED-DIRECT` (you Read it yourself in this turn) from `UNVERIFIED` (anything else, including subagent summaries). Subagent reports — `Explore`, `Task`, etc. — explicitly **do not** count as verification, since their internal reads happen in a separate context and their summaries can paraphrase, miss reservations, or hallucinate line numbers.
+- **Added a CITATION CHECK step (step 5).** Before responding, Claude must list every file:line / signature / enum / RPC / schema claim and confirm a `Read` or `Grep` tool call in this turn touched the cited path. If not — Read it now or remove the claim.
+- **Added a Stop hook (`scripts/check-citations.py`).** Mechanically scans every response for `path/to/file.ext:NUMBER` citations and blocks any response that cites a file Claude did not directly Read or Grep in the same turn. Subagent (Task / Agent) calls are intentionally excluded as evidence — that's the failure mode this catches.
+- **New commands:** `/adhoc:citations-on`, `/adhoc:citations-off`. `/adhoc:status` updated to show both hook states.
+- **New telemetry:** `~/.claude/.adhoc-citations-log.jsonl` — every citation check is logged for offline regex tuning.
+- **Added an offline test suite** (`tests/test_check_citations.py`) — 10 cases including the original Shiro-style failure, fenced-block skipping, subagent-laundering detection, and diff-marker handling. All pass on a clean install.
+
+### v0.1.0
+
+- Initial release. UserPromptSubmit hook injects a 5-step methodical preamble on every turn. Toggle commands (`/adhoc:on`, `/adhoc:off`, `/adhoc:casual`, `/adhoc:status`). `/adhoc:deep` skill for heavier analysis. `adhoc:second-opinion` subagent for independent critique.
 
 ---
 

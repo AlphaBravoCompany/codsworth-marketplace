@@ -1,7 +1,7 @@
 {
   "name": "adhoc",
   "description": "Stops Claude from racing on ad-hoc work. Injects a methodical pre-response checklist on every turn — restate the task, mark assumptions VERIFIED/UNVERIFIED, cite CLAUDE.md and memory rules in play, surface alternatives before recommending, confirm before editing. Always-on with /adhoc:casual (one turn) and /adhoc:off (whole session) escape hatches. /adhoc:deep for heavier analysis, /adhoc:second-opinion for an independent fresh-context critique.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "AlphaBravo"
   }
