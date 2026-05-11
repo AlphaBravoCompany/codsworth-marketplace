@@ -189,6 +189,10 @@ rm -f ~/.claude/.adhoc-state ~/.claude/.adhoc-citations-mode ~/.claude/.adhoc-ci
 
 ## Changelog
 
+### v0.1.4
+
+- **Comments are not code.** New closing rule: doc comments, inline comments, docstrings, package prose, and README descriptions describe what the author *intended* or what the code *used to do* — they are not current behavior. When verifying a claim, the executable code is the evidence: function bodies, control flow, return statements, conditionals, actual SQL, actual proto, actual route wiring. A comment saying "Returns nil on error" is not evidence the function does so. A docstring claiming validation is not evidence of validation. Comments rot; code is authoritative. If a comment and the code disagree, the code is right.
+
 ### v0.1.3
 
 - **Hedge-language audit.** New closing rule in the preamble flags words like *probably / likely / typically / generally / usually / in this kind of project / I'd expect / common pattern / should be / tends to / by convention* as tripwires for unverified inference. When any of these appear in a substantive claim about the current codebase, Claude must either (a) Read/Grep to convert the hedge into a specific evidenced claim, or (b) explicitly downgrade with a disclosure ("I haven't Read this — I'm inferring; want me to verify first?"). Catches the failure mode that slips under the citation Stop hook — confident-shaped answers built on training-data pattern-matching when no specific `file:line` citations are made.
