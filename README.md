@@ -1,15 +1,16 @@
 <p align="center">
-  <img src=".github/assets/banner.jpg" alt="Codsworth Marketplace — Forge & Foundry" width="900"/>
+  <img src=".github/assets/banner.jpg" alt="Codsworth Marketplace — Forge, Foundry, adhoc" width="900"/>
 </p>
 
 <p align="center">
-  <b>Forge plans. Foundry builds.</b><br/>
-  <i>A two-plugin marketplace for Claude Code — the spec engine and the build engine, working as one.</i>
+  <b>Forge plans. Foundry builds. adhoc keeps Claude honest in between.</b><br/>
+  <i>A three-plugin marketplace for Claude Code — the spec engine, the build engine, and the always-on rule layer for ad-hoc work.</i>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/forge-v4.3.0-1E88E5?style=flat-square" alt="Forge v4.3.0"/>
   <img src="https://img.shields.io/badge/foundry-v4.3.0-F57C00?style=flat-square" alt="Foundry v4.3.0"/>
+  <img src="https://img.shields.io/badge/adhoc-v0.1.4-43A047?style=flat-square" alt="adhoc v0.1.4"/>
   <img src="https://img.shields.io/badge/Claude%20Code-plugin-8E44AD?style=flat-square" alt="Claude Code plugin"/>
   <img src="https://img.shields.io/badge/license-MIT-2E7D32?style=flat-square" alt="MIT license"/>
 </p>
@@ -18,14 +19,15 @@
 
 ## Why Codsworth
 
-Most AI coding tools either **ask and build in one breath** — producing code that drifts from what you actually wanted — or **plan in one context and execute in another**, producing plans that rot on the way to the executor.
+Most AI coding tools either **ask and build in one breath** — producing code that drifts from what you actually wanted — or **plan in one context and execute in another**, producing plans that rot on the way to the executor. And the in-between — the ad-hoc back-and-forth where Claude races to a confident-sounding answer built on training-data inference — leaks confidently-wrong code citations into otherwise-careful work.
 
-Codsworth splits the work cleanly across two specialised plugins and makes them honest partners:
+Codsworth splits the work cleanly across three plugins, each with one job:
 
 - **Forge** runs a codebase-aware, ecosystem-grounded **interview** and produces a locked, verifiable spec.
 - **Foundry** takes the locked spec and runs an **autonomous build-verify-fix loop** with mechanical drift prevention at every handoff.
+- **adhoc** is the **always-on rule layer for ad-hoc work** — it injects a methodical pre-response checklist on every turn, and a Stop hook mechanically blocks responses with file:line citations Claude did not directly Read or Grep.
 
-Both plugins share one discipline: **plans are prompts**. What Forge writes is what Foundry reads, byte for byte. No interpretation layer, no paraphrasing, no "I'll just adjust the scope a little." The spec survives the trip.
+Forge and Foundry share one discipline: **plans are prompts**. What Forge writes is what Foundry reads, byte for byte. No interpretation layer, no paraphrasing, no "I'll just adjust the scope a little." The spec survives the trip. adhoc shares the same discipline at a smaller scale: it makes Claude show its work and verify its citations on every ad-hoc turn, so the answers you didn't run through a formal Forge→Foundry pipeline don't quietly drift either.
 
 ---
 
@@ -66,17 +68,41 @@ Each plugin has one job and does it well. Forge does not build. Foundry does not
 
 ---
 
+## And adhoc — the always-on rule layer
+
+While Forge and Foundry handle spec'd, contracted work, adhoc covers the gaps in between — the small asks, the exploratory bugs, the *"can you take a look at this?"* turns where you don't want to spin up a full spec. It runs on every conversation by default, as two cooperating hooks:
+
+```mermaid
+flowchart LR
+    user([User prompt]) --> up[UserPromptSubmit hook]
+    up --> preamble["Inject methodical preamble:<br/>1. Restate · 2. Assumptions VERIFIED-DIRECT/UNVERIFIED<br/>3. Rules · 4. Alternatives · 5. Citation check · 6. Confirm<br/>+ TLDR default · hedge-language audit · comments-are-not-code"]
+    preamble --> claude[Claude generates response]
+    claude --> stop[Stop hook: check-citations.py]
+    stop -->|"file:line citation<br/>not Read in this turn"| block[BLOCK: 'Read the file or remove the claim']
+    block --> claude
+    stop -->|all citations verified| out([Response delivered])
+```
+
+The preamble shapes the response (a nudge); the Stop hook verifies it (mechanical enforcement). Subagent (Task / Agent) calls do **not** count as verification — that's the failure mode this catches. Together: belt and suspenders against confidently-wrong-shaped answers built on training-data inference.
+
+Forge plans. Foundry builds. adhoc keeps Claude honest in between.
+
+---
+
 ## Quick start
 
 ```bash
-# In Claude Code: add the marketplace and install the duo
+# In Claude Code: add the marketplace and install all three plugins
 claude plugin marketplace add AlphaBravoCompany/codsworth-marketplace
 claude plugin install forge@codsworth
 claude plugin install foundry@codsworth
+claude plugin install adhoc@codsworth
 
 # Wire Foundry's MCP server into your target project
 claude mcp add foundry -- uvx --from "git+https://github.com/AlphaBravoCompany/codsworth-marketplace#subdirectory=plugins/foundry/mcp-server" foundry-mcp --project-root .
 ```
+
+adhoc activates immediately — no further setup. Every new Claude conversation now runs the methodical preamble + citation Stop hook by default. `/adhoc:status` to inspect, `/adhoc:casual` to skip a trivial turn, `/adhoc:off` to silence the session.
 
 Then, from inside your project:
 
@@ -184,18 +210,40 @@ Foundry takes a spec and **autonomously** delivers a working feature, with mecha
 
 ---
 
-## What makes the duo different
+## adhoc — the always-on rule layer
+
+adhoc is the runtime layer for everything that *isn't* a Forge→Foundry pipeline run. It treats the failure mode of ad-hoc work — Claude racing to a confident-sounding answer built on training-data inference — as a runtime problem, not a prompt-discipline problem.
+
+### What makes adhoc different
+
+- **Runtime enforcement, not memory.** CLAUDE.md and persisted memory are passive — read once, agreed with, quietly ignored when the next prompt feels simple. adhoc installs two hooks (`UserPromptSubmit` + `Stop`) that fire on every turn, so the rules can't be skipped.
+- **Methodical preamble.** Every user prompt gets a six-step pre-response checklist injected: restate the task; mark assumptions `VERIFIED-DIRECT` (you Read it) vs `UNVERIFIED` (anything else, including subagent summaries); cite applicable CLAUDE.md / memory rules; surface alternatives with tradeoffs; run a citation check; confirm before edits.
+- **Citation Stop hook.** A Python script (`check-citations.py`) scans every response for `path/to/file.ext:NUMBER` claims and cross-checks against this turn's `Read` / `Grep` tool calls. If a cited file wasn't Read or Grep'd by Claude directly in this turn, the hook **blocks the response** — Claude must Read the file or remove the claim. Subagent (Task / Agent) reads do **not** count as verification, since they happen in a separate context.
+- **Hedge-language audit.** Words like *probably / likely / typically / generally / usually / by convention* are treated as tripwires for unverified inference. Claude must either verify or explicitly downgrade with *"I'm inferring without verifying — want me to Read first?"*
+- **Comments are not code.** Doc comments, docstrings, package prose, and READMEs describe author intent, not current behavior. When verifying a claim, executable code is the evidence — not the comment above it.
+- **TLDR by default.** Lead with the answer in 3–6 lines. Expand to full structured analysis only when the user asks or when the task itself is a comparison / design / decision that needs the structure.
+- **Independent toggles.** `/adhoc:off` silences the preamble; `/adhoc:citations-off` disables the Stop hook. Different problems, different switches. `/adhoc:casual` skips the next turn only and auto-reverts.
+- **`/adhoc:deep` skill.** When the always-on preamble isn't enough, `/adhoc:deep` runs a heavier seven-step methodical analysis pass (read-only).
+- **`adhoc:second-opinion` subagent.** Spawn a fresh-context Claude to critique a plan or recommendation. Returns `CONCUR` / `CONCUR WITH CAVEATS` / `PUSH BACK` / `WRONG SHAPE`.
+- **Offline test suite.** 10 cases covering the original Shiro-style citation failure, fenced-block skipping, subagent-laundering detection, diff-marker handling, off-mode short-circuit, and log-write behavior. All pass on a clean install.
+
+---
+
+## What makes Codsworth different
 
 | Most AI coding tools | Codsworth |
 |---|---|
 | Ask and build in one breath | Interview → spec → autonomous build, cleanly separated |
 | Planner rewrites the prompt for the executor | Plans are prompts — decompose authors once, verbatim everywhere |
 | Drift prevention is prose discipline | Drift prevention is mechanical (F0.9 + Accept-Casting + byte-identical propagation) |
-| "Looks done" = tests pass | "Looks done" = 9 validation dimensions + up to 7 inspect streams + fresh-eyes assay |
+| "Looks done" = tests pass | "Looks done" = 11 validation dimensions + up to 8 inspect streams + fresh-eyes assay |
 | User approves every phase | Fully autonomous from `/foundry:start` to F6 DONE |
 | CLAUDE.md is loaded per agent and hoped-for | CLAUDE.md rules are extracted verbatim and propagated byte-identical into every casting, verified mechanically |
 | End-state descriptions everywhere | Brownfield runs use grounded flow deltas — no end-state framing for teammates extending existing systems |
 | Bugs are logged for later | Every defect becomes a casting-scoped grind task; no deferrals |
+| Ad-hoc Claude races to a confident answer | adhoc preamble + Stop hook force verify-before-claim on every turn — confidently-wrong citations are mechanically blocked |
+| Subagent says it Read the file → claim "verified" | adhoc rejects subagent summaries as evidence; only direct Read/Grep in the current turn counts |
+| Comments and docstrings count as evidence | adhoc treats only executable code as evidence — comments describe intent, not behavior |
 
 ---
 
@@ -232,6 +280,7 @@ Forge writes specs under `docs/specs/{feature-slug}/spec.md` using a structured 
 claude plugin marketplace update codsworth
 claude plugin update forge@codsworth
 claude plugin update foundry@codsworth
+claude plugin update adhoc@codsworth
 ```
 
 ## Versioning
@@ -248,4 +297,4 @@ MIT — see [LICENSE](./LICENSE).
 
 ---
 
-<p align="center"><i>Forge plans. Foundry builds. You ship.</i></p>
+<p align="center"><i>Forge plans. Foundry builds. adhoc keeps Claude honest. You ship.</i></p>

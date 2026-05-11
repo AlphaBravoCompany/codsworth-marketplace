@@ -26,6 +26,18 @@ adhoc fixes it the only way that actually works: **at the runtime, not the promp
 
 Two complementary hooks:
 
+```mermaid
+flowchart LR
+    user([User prompt]) --> up[UserPromptSubmit hook<br/>scripts/inject.sh]
+    up --> preamble["Inject methodical preamble:<br/>1. Restate · 2. Assumptions VERIFIED-DIRECT/UNVERIFIED<br/>3. Rules · 4. Alternatives · 5. Citation check · 6. Confirm<br/>+ TLDR default · hedge-language audit · comments-are-not-code"]
+    preamble --> claude[Claude generates response]
+    claude --> stop[Stop hook<br/>scripts/check-citations.py]
+    stop -->|"file:line citation<br/>not Read/Grep'd this turn"| block["BLOCK + force continue:<br/>'Read the file or remove the claim'"]
+    block --> claude
+    stop -->|all citations verified<br/>or none present| out([Response delivered])
+    stop -.->|append| log["~/.claude/.adhoc-citations-log.jsonl<br/>(every check, for tuning)"]
+```
+
 **1. `UserPromptSubmit` hook (the nudge).** Fires before Claude sees your message. Emits a methodical preamble that becomes part of the prompt context. Claude must walk the checklist briefly before answering.
 
 ```
