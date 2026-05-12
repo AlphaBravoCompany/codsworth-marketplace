@@ -35,6 +35,36 @@
       "author": {
         "name": "AlphaBravo"
       }
+    },
+    {
+      "name": "crew",
+      "source": "./plugins/crew",
+      "description": "Throw an AI dev at a problem and have it own the outcome. Five Opus agents (router, scout, worker, critic, fresh-eyes) collaborate to investigate, plan, execute, and verify — SSH into systems, spin up infra, edit code, ship features, debug deploys, get airgap bundles working. Worker self-switches between investigating, planning, executing, and verifying modes — one persistent persona, not five different ones. Bounded scout budget (25 tool calls / 5 min, doubled in --paranoid), multi-agent reflexion on stuck (N=2-3 parallel variants + judge — fixes Reflexion's degeneration-of-thought failure mode), critic and fresh-eyes both produce mandatory evidence ledgers of commands they actually ran. One checkpoint (plan approval) for side-effecting tasks, zero for pure investigation. Plan and debrief render in chat; state files exist in .crew/runs/ for resume. Production beats --yolo always.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "author": {
+        "name": "AlphaBravo"
+      }
+    },
+    {
+      "name": "tidy",
+      "source": "./plugins/tidy",
+      "description": "Careful low-risk codebase cleanup across 7 focused tracks: deduplication, type consolidation, dead code removal, circular dependency untangling, type strengthening, error-handling cleanup, and deprecated/AI-slop removal. Each track inspects in parallel (read-only), writes a critical assessment, ranks proposed changes by confidence (HIGH / MEDIUM / LOW / UNCERTAIN), and auto-applies ONLY HIGH-confidence LOW-risk changes per batch — running language-appropriate type checks, tests, and lints after each. MEDIUM and LOW changes get surfaced for explicit human decision. Atomic git commits per batch so any failing check is one revert away. Anti-pattern guardrails: never merges code that just LOOKS similar; never removes dynamically-imported / config-referenced / framework-convention / generated code; never strips legitimate boundary types (JSON parses, external APIs, FFI); never silences real error boundaries; never introduces new abstractions just to break a cycle; never uses comments as the source of truth. Refuses to run on a dirty working tree. Default mode is --dry-run (assess only); --apply is opt-in with a checkpoint before changes; --auto skips the checkpoint but never the HIGH-only confidence gate.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "author": {
+        "name": "AlphaBravo"
+      }
+    },
+    {
+      "name": "e2e",
+      "source": "./plugins/e2e",
+      "description": "End-to-end test authoring and maintenance for web apps via Playwright + Playwright MCP. Claude drives a real browser, reads the accessibility tree, and emits *.spec.ts files that pass — then keeps them passing. /e2e:init scaffolds Playwright in the cwd and registers the MCP server. /e2e:write <flow> drives the browser to perform the flow and emits a green spec. /e2e:crawl discovers every route and generates a smoke spec per route. /e2e:matrix produces a routes × roles coverage suite with reused storageState. /e2e:audit runs the suite, reads trace.zip files, and triages failures by root cause. /e2e:record wraps playwright codegen for manual capture. The author skill enforces selector hygiene (getByRole over CSS), auto-wait discipline, and idempotent test design; the diagnose skill drives trace-driven flaky-test triage. The spec-writer subagent isolates MCP-driven spec authoring from the main context.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "author": {
+        "name": "AlphaBravo"
+      }
     }
   ]
 }
