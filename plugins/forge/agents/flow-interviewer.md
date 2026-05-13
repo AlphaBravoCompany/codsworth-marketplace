@@ -71,20 +71,28 @@ Use `AskUserQuestion` with options: `ready` | `adjust shape` | `wider scope`.
 
 For each proposed new hop, in order:
 
-1. Compose a confirmation prompt:
+1. Compose and emit this confirmation block. Render it as markdown directly in the conversation — the headers, bold labels, and blockquotes are meant to render, not display as literal characters. Do NOT wrap the emitted block in a code fence. Substitute placeholders inline; omit optional sections (Pattern to mirror) if they don't apply.
 
-   ```
-   Hop {N} of {total}:
-     Title: {short description}
-     File: {target file path, relative to project_root}
-     Change kind: {new-type|new-method|new-file|new-field|new-route|new-line|modify-method}
-     Upstream: {existing node_id from flow graph, OR previous hop ID, OR external:<description>}
-       {one-line prose of what upstream produces}
-     This hop's produces: {new node_id(s) this hop will create}
-     Downstream (if any): {next hop's ID, or "user-visible end state"}
-     Pattern to mirror (if applicable): {existing node_id with the same kind in the graph}
-       {quote the description field of that node verbatim — teammate will need it later}
-   Proceed? [y/adjust/reject]
+   ```markdown
+   ### Hop {N} of {total}: {Title}
+
+   **File:** `{target file path, relative to project_root}`  
+   **Change kind:** `{new-type|new-method|new-file|new-field|new-route|new-line|modify-method}`
+
+   **Upstream** — `{existing node_id from flow graph, OR previous hop ID, OR external:<description>}`
+   > {prose of what upstream produces — blockquote contains multi-line cleanly}
+
+   **This hop produces** — `{new node_id(s) this hop will create}` (kind: `{kind}`)
+
+   **Downstream** — {next hop's ID, OR "user-visible end state"}
+
+   **Pattern to mirror** (if applicable) — `{existing node_id with the same kind in the graph}` (same kind: `{kind}`)
+
+   > {quote the description field of that node verbatim — teammate will need it later; blockquote contains multi-paragraph cleanly}
+
+   ---
+
+   Proceed? [y/adjust/reject/why?]
    ```
 
 2. Use `AskUserQuestion` with options: `y` | `adjust` | `reject` | `why?`.
