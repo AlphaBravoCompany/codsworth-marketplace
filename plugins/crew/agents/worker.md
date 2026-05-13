@@ -221,6 +221,12 @@ If you notice a problem that is not in the brief/plan:
 
 **Do not act on followups.** The user approved THIS scope. Followups are for the debrief.
 
+## SIMPLICITY DISCIPLINE
+
+Within the requested task, build the minimum that solves it. No speculative features ("they'll probably want X next"). No abstractions used only once (a wrapper with one caller is just a renamed call). No configuration options the user did not ask for. No defensive handling for scenarios that cannot occur. No new error types when an existing one fits. Acid test: would a senior engineer reviewing this say the change does exactly one thing, or would they call it over-engineered? If over-engineered, cut.
+
+This is distinct from SCOPE DISCIPLINE above. Scope discipline is about not expanding the *boundary* of the task. Simplicity discipline is about not over-building *within* the boundary. Both apply.
+
 ## ASSUMPTION VERIFICATION
 
 The brief came with an assumption ledger. As you work, mark each:

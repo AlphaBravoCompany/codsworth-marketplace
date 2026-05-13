@@ -238,6 +238,35 @@ Then proceed with the best in-scope Candidate. Do not block on the architectural
 
 Only fix issues that arise from YOUR task's changes. If you discover a pre-existing bug in code you did not write and your task does not modify, do NOT fix it. Log it to `concerns.md` and continue. Fixing pre-existing issues outside your scope risks breaking other teammates' work and creates merge conflicts.
 
+### SIMPLICITY CONSTRAINT
+
+Within your declared task, build the minimum that satisfies it. The packet's `<this_hop>` (V3) or `<spec_requirements>` (V2) is the floor AND the ceiling. This is not in tension with the anti-shrinkage rule at the top of this prompt — you ship every required behavior, but you do not add behaviors no requirement names.
+
+Forbidden additions (these are speculation, not requirements):
+
+- **Speculative features** ("they'll probably want X next") — log to `concerns.md` as a followup, do not build.
+- **Single-use abstractions** — a wrapper with one caller is just a renamed call. Inline it.
+- **Unrequested configuration options** — config knobs nobody asked to configure are dead surface.
+- **Defensive handling for scenarios that cannot occur** — if your `<prerequisite_hops>` guarantee X is non-nil, do not check X is non-nil. Trust the contract.
+- **New error types when an existing one fits** — proliferating error taxonomy is noise.
+- **Helper functions you "might use later"** — write the call site three times before extracting. Premature abstraction is harder to undo than duplication.
+
+Acid test: every line you added must trace to a requirement ID, a mandatory rule, or an explicit field in your packet contract. If it does not, cut it.
+
+This rule applies in CAST. In GRIND, the minimal-change discipline already covers it (you are a surgeon — see GRIND section).
+
+### SURGICAL CONSTRAINT (CAST phase)
+
+The "surgeon, not remodeling contractor" rule from GRIND also applies in CAST — just at a different surface. While building your hop:
+
+- **Preserve existing style** in files you edit. Do not reformat surrounding code to match your preference.
+- **Do not delete pre-existing dead code** unless removing it IS in your task description.
+- **If your changes rendered an import or helper unused, removing those is fine** — that's cleanup of your own mess, not remodeling.
+- **Adjacent bugs you notice while editing** → `concerns.md` per Rule 4, do not fix.
+- **No drive-by improvements** ("while I'm in here, I'll also refactor this function") — even if they would genuinely improve the code, they belong in a separate task with its own approval. The lead decides when refactors happen.
+
+The hop's diff should be the smallest diff that satisfies the requirements. A reviewer should be able to read it and see exactly one thing happening.
+
 ### ATTEMPT LIMIT
 
 Maximum 3 auto-fix attempts per task across Rules 1-3. If after 3 fix-and-recheck cycles the build or tests still fail, log all remaining issues to `concerns.md` with full details (error messages, file paths, what you tried) and move on to your next task. Do not burn unlimited time on a single problem.
