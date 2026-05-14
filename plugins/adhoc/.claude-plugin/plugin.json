@@ -1,7 +1,7 @@
 {
   "name": "adhoc",
-  "description": "Stops Claude from racing on ad-hoc work. Injects a methodical pre-response checklist on every turn — restate the task, mark assumptions VERIFIED/UNVERIFIED, cite CLAUDE.md and memory rules in play, surface alternatives before recommending, confirm before editing. Always-on with /adhoc:casual (one turn) and /adhoc:off (whole session) escape hatches. /adhoc:deep for heavier analysis, /adhoc:second-opinion for an independent fresh-context critique.",
-  "version": "0.1.5",
+  "description": "Stops Claude from racing on ad-hoc work. Methodical-mode pre-response checklist injected every turn (Restate, Verified/Unverified assumptions, Read Floor, Approach Deliberation, Blast Radius, Stall Check, Competing Hypotheses, Goal-Driven Execution). Stop hook enforces four gates: file:line citation verifier, uncertainty-tell scanner, zero-tool-call grounding audit, and pre-Stop critic-agent. /adhoc:casual (one turn skip), /adhoc:trust-me (one-turn strict bypass), /adhoc:off (session disable). /adhoc:deep for heavier analysis, /adhoc:second-opinion for independent critique.",
+  "version": "0.2.0",
   "author": {
     "name": "AlphaBravo"
   }
