@@ -29,8 +29,8 @@
     {
       "name": "adhoc",
       "source": "./plugins/adhoc",
-      "description": "Stops Claude from racing on ad-hoc work. Always-on UserPromptSubmit hook injects a methodical pre-response checklist every turn — restate the task, mark assumptions VERIFIED-DIRECT/UNVERIFIED (subagent reports do NOT count as verification), cite CLAUDE.md and memory rules in play, surface alternatives, run a citation check, confirm before editing. Plus a Stop hook that mechanically blocks responses with file:line citations Claude did not Read in the same turn — catching the subagent-summary-laundered claims that preamble nudges miss. /adhoc:casual skips one turn, /adhoc:off silences the session, /adhoc:citations-on/off toggles the citation hook, /adhoc:deep runs a heavier analysis pass, and the second-opinion subagent provides independent fresh-context critique.",
-      "version": "0.1.5",
+      "description": "Stops Claude from racing on ad-hoc work. Methodical-mode pre-response checklist injected every turn (Restate, Verified/Unverified assumptions, Read Floor, Approach Deliberation, Blast Radius, Stall Check, Competing Hypotheses, Goal-Driven Execution). Stop hook enforces four gates: file:line citation verifier, uncertainty-tell scanner, zero-tool-call grounding audit, and an iterative two-tier critic-dialog (Haiku fast-critic rounds 1-2, opus pre-stop-critic rounds 3-5, HARD block at round 5 until /adhoc:trust-me bypass). Each critic runs a 10-item rule compliance audit and sees the prior round's feedback to verify Claude actually addressed flagged issues. /adhoc:casual (one turn skip), /adhoc:trust-me (one-turn strict bypass), /adhoc:off (session disable). /adhoc:deep for heavier analysis, /adhoc:second-opinion for independent critique.",
+      "version": "0.3.0",
       "category": "productivity",
       "author": {
         "name": "AlphaBravo"
