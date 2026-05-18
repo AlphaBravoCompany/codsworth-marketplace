@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""adhoc Stop hook — methodical-mode enforcement gates.
+"""adhoc Stop hook — methodical-mode enforcement gates (v0.3.0).
 
 Reads the Stop hook event JSON from stdin, walks the conversation transcript
 to find the current turn's last assistant message and tool calls, then runs
@@ -7,34 +7,46 @@ four enforcement gates. Any gate firing blocks the Stop with a combined
 reason message that Claude reads on the continued turn.
 
 Gates:
-  (a) Citations — file:line citations in the response must be backed by a
-      Read/Grep call Claude made directly in this turn. Subagent calls do
-      not count. Mode file: ~/.claude/.adhoc-citations-mode (default/off).
+  (a) Citations  — file:line citations in the response must be backed by a
+                   Read/Grep call Claude made directly in this turn. One block
+                   per turn (honors stop_hook_active liveness).
 
   (b) Uncertainty — response must NOT contain self-flagged uncertainty
-      tells like "not verified", "haven't checked", "I assumed".
-      Mode file: ~/.claude/.adhoc-uncertainty-mode (default/off).
+                    tells like "not verified", "haven't checked", "I assumed".
+                    One block per turn.
 
-  (c) Grounding — if the user's prompt looks like a codebase question
-      (mentions file paths, code extensions, project terms), the response
-      requires at least one Read/Grep/Glob call this turn. No general-
-      knowledge fallback for codebase questions. Mode file:
-      ~/.claude/.adhoc-strict-mode (default/off; shared with (d)).
+  (c) Grounding  — if the user's prompt looks codebase-shaped, the response
+                   requires at least one Read/Grep/Glob call this turn.
+                   No general-knowledge fallback. One block per turn.
 
-  (d) Critic — substantive responses must be reviewed by spawning the
-      adhoc:pre-stop-critic subagent at least once this turn before
-      Claude is allowed to Stop. The critic's verdict (CONCUR / PUSH BACK /
-      WRONG SHAPE) is logged but does not itself block (single critic
-      cycle per turn). Mode file: shares ~/.claude/.adhoc-strict-mode.
+  (d) Iterative Critic — substantive responses must pass an iterative
+                         critic-dialog: rounds 1-2 use adhoc:fast-critic
+                         (Haiku), rounds 3-5 escalate to adhoc:pre-stop-critic
+                         (opus). Each critic runs a 10-item rule compliance
+                         audit and sees prior-round feedback (continuity
+                         check). Up to 5 rounds per turn. At round 5: HARD
+                         block (no pass-through) until /adhoc:trust-me
+                         consumed. Round counter replaces stop_hook_active
+                         honoring for this gate ONLY.
 
-One-shot bypass for (c) and (d): ~/.claude/.adhoc-trust-me (file is
-consumed on read). Recursion guard: if the assistant response starts
-with the sentinel marker [adhoc:pre-stop-critic-output], ALL gates skip
-(this turn IS the critic, not a normal Claude turn).
+One-shot bypass for (c) and (d): ~/.claude/.adhoc-trust-me (consumed on read).
 
-Mode files all use the same convention as v0.1.5's citations-mode:
-  absent / "default" — gate ON (block on violation)
-  "off"              — gate short-circuits, no checks
+Recursion guard: if the assistant response starts with EITHER critic sentinel
+([adhoc:fast-critic-output] OR [adhoc:pre-stop-critic-output]), ALL gates
+skip (this turn IS a critic, not the main Claude).
+
+Mode files (all under ~/.claude/):
+  .adhoc-citations-mode     (a)  absent/"default" / "off"
+  .adhoc-uncertainty-mode   (b)  absent/"default" / "off"
+  .adhoc-strict-mode        (c)+(d)  absent/"default" / "off"
+  .adhoc-trust-me           one-shot bypass file for (c)+(d), consumed on read
+
+Liveness model (v0.3.0):
+  - Gates (a)/(b)/(c) honor stop_hook_active: one block per turn each
+    (preserves v0.2.0 anti-loop safety)
+  - Gate (d) uses transcript-based round counter: up to MAX_CRITIC_ROUNDS=5
+    block-rounds per turn, then HARD block at round 5
+  - Trust-me file consumed before any gate runs; if present, (c)+(d) skip
 """
 
 from __future__ import annotations
@@ -55,17 +67,24 @@ STRICT_MODE_FILE = HOME / ".claude" / ".adhoc-strict-mode"
 TRUST_ME_FILE = HOME / ".claude" / ".adhoc-trust-me"
 LOG_FILE = HOME / ".claude" / ".adhoc-citations-log.jsonl"
 
-# Sentinel — pre-stop-critic output starts with this on its first line.
-# Used as the recursion guard: if the response begins with this marker, the
-# Stop is for the critic itself, not the main Claude, and ALL gates skip.
-CRITIC_SENTINEL = "[adhoc:pre-stop-critic-output]"
+# Critic agent identifiers — two tiers
+FAST_CRITIC_AGENT_TYPE = "adhoc:fast-critic"
+DEEP_CRITIC_AGENT_TYPE = "adhoc:pre-stop-critic"
 
-# What subagent_type the critic gate looks for in Task/Agent tool calls
-CRITIC_AGENT_TYPE = "adhoc:pre-stop-critic"
+# Sentinel markers — first line of each critic's output. Recursion guard.
+FAST_CRITIC_SENTINEL = "[adhoc:fast-critic-output]"
+DEEP_CRITIC_SENTINEL = "[adhoc:pre-stop-critic-output]"
+CRITIC_SENTINELS = (FAST_CRITIC_SENTINEL, DEEP_CRITIC_SENTINEL)
+
+# Iterative gate-dialog: max 5 rounds per turn.
+# Rounds 1-2: fast-critic (Haiku). Rounds 3-5: pre-stop-critic (opus escalation).
+# At round 5 reached without CONCUR: HARD block until trust-me consumed.
+MAX_CRITIC_ROUNDS = 5
+FAST_CRITIC_LAST_ROUND = 2  # rounds 1..2 use fast-critic; rounds 3..5 escalate
 
 # Length thresholds (chars)
 GROUNDING_MIN_RESPONSE_CHARS = 200
-CRITIC_MIN_RESPONSE_CHARS = 500
+CRITIC_MIN_RESPONSE_CHARS = 200  # v0.3.0: lowered from 500 to catch short ritual responses
 CLARIFYING_GATE_LENGTH = 1000  # asks shorter than this skip critic gate
 
 # Code-file extensions (used by both citation regex and grounding heuristic)
@@ -135,12 +154,30 @@ CLARIFYING_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# (d) Critic — verdict extraction from critic output (used for logging only;
-# gate passes once any critic call exists this turn)
+# (d) Critic — verdict extraction from critic output (used for gate decision)
 CRITIC_VERDICT_RE = re.compile(
     r"^###\s+Verdict\s*\n\s*(CONCUR(?:\s+WITH\s+CAVEATS)?|PUSH\s+BACK|WRONG\s+SHAPE)\b",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# (d) Critic — round number extraction
+CRITIC_ROUND_RE = re.compile(
+    r"^###\s+Round\s*\n\s*(\d+)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# (d) Critic — "Specific feedback for Claude" section extraction
+CRITIC_FEEDBACK_RE = re.compile(
+    r"^###\s+Specific\s+feedback\s+for\s+Claude\s*\n(.*?)(?=^###\s|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+# (d) Critic — "Compliance audit" section extraction
+CRITIC_AUDIT_RE = re.compile(
+    r"^###\s+Compliance\s+audit\s*\n(.*?)(?=^###\s|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
 
 # --- helpers --------------------------------------------------------------
 
@@ -233,8 +270,8 @@ def path_matches_verified(cited: str, verified: set[str]) -> bool:
     return False
 
 
-def collect_critic_calls(turn_messages: list[dict]) -> int:
-    """Count Task/Agent tool calls with subagent_type == adhoc:pre-stop-critic."""
+def collect_critic_calls_by_type(turn_messages: list[dict], agent_type: str) -> int:
+    """Count Task/Agent tool calls with the given subagent_type in this turn."""
     count = 0
     for msg in turn_messages:
         if msg.get("role") != "assistant":
@@ -250,14 +287,66 @@ def collect_critic_calls(turn_messages: list[dict]) -> int:
             if block.get("name") not in AGENT_TOOLS:
                 continue
             params = block.get("input", {}) or {}
-            if params.get("subagent_type") == CRITIC_AGENT_TYPE:
+            if params.get("subagent_type") == agent_type:
                 count += 1
     return count
 
 
-def find_critic_verdict(turn_messages: list[dict]) -> str | None:
-    """Extract the verdict line from the most recent critic tool_result, if any."""
-    for msg in reversed(turn_messages):
+def starts_with_any_sentinel(text: str) -> bool:
+    """True if response begins with EITHER critic sentinel (recursion guard)."""
+    stripped = text.lstrip()
+    return any(stripped.startswith(s) for s in CRITIC_SENTINELS)
+
+
+def critic_tier_for_round(round_num: int) -> str:
+    """Map round number to critic agent type: rounds 1-2 fast, 3+ deep."""
+    if round_num <= FAST_CRITIC_LAST_ROUND:
+        return FAST_CRITIC_AGENT_TYPE
+    return DEEP_CRITIC_AGENT_TYPE
+
+
+def _extract_tool_result_text(content_blocks) -> str:
+    """Flatten a tool_result content list to one string."""
+    if isinstance(content_blocks, str):
+        return content_blocks
+    if isinstance(content_blocks, list):
+        return "\n".join(
+            b.get("text", "")
+            for b in content_blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def parse_critic_output(text: str) -> dict:
+    """Extract round, verdict, feedback, audit from a critic's output."""
+    result = {"verdict": None, "round": None, "feedback": "", "audit": ""}
+    if not text or not isinstance(text, str):
+        return result
+    if not any(s in text for s in CRITIC_SENTINELS):
+        return result
+    m = CRITIC_VERDICT_RE.search(text)
+    if m:
+        result["verdict"] = re.sub(r"\s+", " ", m.group(1).upper()).strip()
+    m = CRITIC_ROUND_RE.search(text)
+    if m:
+        try:
+            result["round"] = int(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    m = CRITIC_FEEDBACK_RE.search(text)
+    if m:
+        result["feedback"] = m.group(1).strip()
+    m = CRITIC_AUDIT_RE.search(text)
+    if m:
+        result["audit"] = m.group(1).strip()
+    return result
+
+
+def find_all_critic_outputs(turn_messages: list[dict]) -> list[dict]:
+    """Return parsed critic outputs from this turn, in chronological order."""
+    out: list[dict] = []
+    for msg in turn_messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content", [])
@@ -268,19 +357,13 @@ def find_critic_verdict(turn_messages: list[dict]) -> str | None:
                 continue
             if block.get("type") != "tool_result":
                 continue
-            text_content = block.get("content", "")
-            if isinstance(text_content, list):
-                text_content = "\n".join(
-                    b.get("text", "") for b in text_content if isinstance(b, dict)
-                )
-            if not isinstance(text_content, str):
+            text = _extract_tool_result_text(block.get("content", ""))
+            if not text or not any(s in text for s in CRITIC_SENTINELS):
                 continue
-            if CRITIC_SENTINEL not in text_content:
-                continue
-            m = CRITIC_VERDICT_RE.search(text_content)
-            if m:
-                return re.sub(r"\s+", " ", m.group(1).upper())
-    return None
+            parsed = parse_critic_output(text)
+            if parsed["verdict"]:
+                out.append(parsed)
+    return out
 
 
 def find_last_user_prompt(messages: list[dict]) -> str:
@@ -303,6 +386,38 @@ def find_last_user_prompt(messages: list[dict]) -> str:
             if has_text:
                 return "\n".join(text_parts)
     return ""
+
+
+def summarize_tool_calls(turn_messages: list[dict]) -> str:
+    """One-line-per-call summary of tool calls in this turn (for critic spawn input)."""
+    summary_lines: list[str] = []
+    for msg in turn_messages:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", [])
+        if isinstance(content, str):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_use":
+                continue
+            tool = block.get("name", "?")
+            params = block.get("input", {}) or {}
+            target = (
+                params.get("file_path")
+                or params.get("path")
+                or params.get("pattern")
+                or params.get("command")
+                or params.get("subagent_type")
+                or "<no-target>"
+            )
+            if isinstance(target, str) and len(target) > 120:
+                target = target[:117] + "..."
+            summary_lines.append(f"  - {tool}: {target}")
+    if not summary_lines:
+        return "  (none)"
+    return "\n".join(summary_lines)
 
 
 def is_codebase_shaped(prompt_text: str) -> bool:
@@ -342,6 +457,14 @@ def load_transcript(path: str) -> list[dict]:
 
 
 def slice_current_turn(messages: list[dict]) -> tuple[list[dict], dict | None]:
+    """Slice from the most recent GENUINE user prompt to the last assistant message.
+
+    A "genuine user prompt" is a user-role message containing real text content
+    (the user typed something). User-role messages containing only tool_result
+    blocks are INTERNAL to Claude's response process — they belong to the same
+    turn and must be included in the slice. This was a bug in v0.2.0 that made
+    multi-round critic counting fail.
+    """
     if not messages:
         return [], None
     last_assistant = None
@@ -355,8 +478,19 @@ def slice_current_turn(messages: list[dict]) -> tuple[list[dict], dict | None]:
     for i, msg in enumerate(messages):
         if msg is last_assistant:
             break
-        if msg.get("role") == "user":
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
             last_user_idx = i
+            continue
+        if isinstance(content, list):
+            has_text = any(
+                isinstance(b, dict) and b.get("type") == "text"
+                for b in content
+            )
+            if has_text:
+                last_user_idx = i
     turn_start = last_user_idx if last_user_idx >= 0 else 0
     return messages[turn_start:], last_assistant
 
@@ -372,6 +506,32 @@ def assistant_text(msg: dict) -> str:
         if isinstance(block, dict) and block.get("type") == "text":
             parts.append(block.get("text", ""))
     return "\n".join(parts)
+
+
+def format_prior_feedback(prior_outputs: list[dict]) -> str:
+    """Format prior critic outputs for inclusion in the next round's spawn prompt."""
+    if not prior_outputs:
+        return ""
+    lines: list[str] = []
+    for i, p in enumerate(prior_outputs, start=1):
+        round_label = p.get("round") or i
+        verdict = p.get("verdict") or "(unknown)"
+        lines.append(f"  Round {round_label} verdict: {verdict}")
+        if p.get("audit"):
+            audit_lines = [
+                f"    {ln}" for ln in p["audit"].splitlines() if ln.strip()
+            ]
+            if audit_lines:
+                lines.append("    Compliance audit:")
+                lines.extend(audit_lines)
+        if p.get("feedback"):
+            fb_lines = [
+                f"    {ln}" for ln in p["feedback"].splitlines() if ln.strip()
+            ]
+            if fb_lines:
+                lines.append("    Specific feedback:")
+                lines.extend(fb_lines)
+    return "\n".join(lines)
 
 
 # --- check functions ------------------------------------------------------
@@ -473,10 +633,22 @@ def check_grounding(
 
 def check_critic(
     response_text: str,
+    user_prompt: str,
     turn_messages: list[dict],
+    verified_paths: set[str],
     strict_off: bool,
     trust_me_consumed: bool,
 ) -> tuple[bool, str, dict]:
+    """Layer (d) — iterative two-tier critic gate-dialog.
+
+    Up to MAX_CRITIC_ROUNDS rounds per turn:
+      - Rounds 1..FAST_CRITIC_LAST_ROUND: require adhoc:fast-critic call
+      - Rounds FAST_CRITIC_LAST_ROUND+1..MAX_CRITIC_ROUNDS: require adhoc:pre-stop-critic
+
+    Gate passes when most recent critic returns CONCUR or CONCUR WITH CAVEATS.
+    At MAX_CRITIC_ROUNDS with non-CONCUR: HARD block (no pass-through) until
+    trust-me consumed.
+    """
     details: dict = {}
     if strict_off:
         details["skipped"] = "strict-off"
@@ -493,35 +665,133 @@ def check_critic(
     ):
         details["skipped"] = "short-clarifying-response"
         return False, "", details
-    critic_count = collect_critic_calls(turn_messages)
-    details["critic_calls"] = critic_count
-    if critic_count == 0:
+
+    fast_count = collect_critic_calls_by_type(turn_messages, FAST_CRITIC_AGENT_TYPE)
+    deep_count = collect_critic_calls_by_type(turn_messages, DEEP_CRITIC_AGENT_TYPE)
+    rounds_completed = fast_count + deep_count
+    next_round = rounds_completed + 1
+    details["fast_critic_calls"] = fast_count
+    details["deep_critic_calls"] = deep_count
+    details["rounds_completed"] = rounds_completed
+    details["next_round"] = next_round
+
+    prior_outputs = find_all_critic_outputs(turn_messages)
+    details["prior_verdicts"] = [p.get("verdict") for p in prior_outputs]
+
+    if rounds_completed > 0:
+        last_verdict = prior_outputs[-1].get("verdict") if prior_outputs else None
+        details["last_verdict"] = last_verdict
+        if last_verdict in ("CONCUR", "CONCUR WITH CAVEATS"):
+            return False, "", details
+
+    if rounds_completed >= MAX_CRITIC_ROUNDS:
+        prior_summary = format_prior_feedback(prior_outputs)
         reason = (
-            "[adhoc:critic] Response is substantive "
-            f"({len(response_text)} chars) but you have not spawned the "
-            f"{CRITIC_AGENT_TYPE} subagent to review it. Spawn it now via the "
-            "Agent tool:\n"
-            "\n"
+            f"[adhoc:critic-hard-block] Round {MAX_CRITIC_ROUNDS} reached "
+            "WITHOUT a CONCUR verdict from the methodical-mode gate-critic. "
+            "Per your /adhoc:strict-on configuration, this Stop is HARD-blocked "
+            "until /adhoc:trust-me is invoked by the user.\n\n"
+            f"Accumulated critic flags across {MAX_CRITIC_ROUNDS} rounds:\n"
+            f"{prior_summary}\n\n"
+            "Required action: STOP attempting to revise the response. Instead, "
+            "send the user a message stating:\n"
+            "  1. You've been blocked by the methodical-mode gate-critic after "
+            f"{MAX_CRITIC_ROUNDS} rounds.\n"
+            "  2. The accumulated unresolved flags (summarized above).\n"
+            "  3. Ask the user to either (a) guide you on what's still wrong, "
+            "or (b) invoke /adhoc:trust-me to bypass the gate for this turn.\n\n"
+            "Then WAIT for the user. Do not silently retry Stop. The Stop "
+            "hook will continue to BLOCK every Stop attempt until the trust-me "
+            "bypass is invoked or you abandon this turn."
+        )
+        details["hard_block"] = True
+        return True, reason, details
+
+    next_tier = critic_tier_for_round(next_round)
+    tool_calls_summary = summarize_tool_calls(turn_messages)
+    files_touched = sorted(verified_paths) if verified_paths else []
+    files_summary = (
+        "\n".join(f"  - {p}" for p in files_touched) if files_touched else "  (none)"
+    )
+
+    if rounds_completed == 0:
+        reason = (
+            f"[adhoc:critic] Round 1 of {MAX_CRITIC_ROUNDS} — methodical-mode "
+            f"gate-critic required. Response is substantive ({len(response_text)} "
+            f"chars). Spawn the {next_tier} subagent to run the 10-item rule "
+            "compliance audit:\n\n"
             "  Agent({\n"
-            f"    subagent_type: '{CRITIC_AGENT_TYPE}',\n"
-            "    description: 'Pre-Stop critic review',\n"
-            "    prompt: <user prompt> + <your draft response> + <one-line "
-            "summary of tool calls you made this turn> + <list of files you "
-            "Read/Grep'd>\n"
-            "  })\n"
-            "\n"
-            "Address the critic's verdict (CONCUR / PUSH BACK / WRONG SHAPE) "
-            "and revise the response if needed before stopping again. The hook "
-            "passes once a critic call appears in this turn's history.\n"
-            "One-shot bypass for this turn only: /adhoc:trust-me. Disable "
-            "for the whole session: /adhoc:strict-off."
+            f"    subagent_type: '{next_tier}',\n"
+            "    description: 'Methodical-mode gate-critic round 1',\n"
+            "    prompt: <see input contract below>\n"
+            "  })\n\n"
+            "Required spawn-prompt sections (label each clearly):\n"
+            f"  - User prompt: {user_prompt[:600]}"
+            f"{'...' if len(user_prompt) > 600 else ''}\n"
+            "  - Draft response: <quote your full draft response here>\n"
+            "  - Tool calls this turn:\n"
+            f"{tool_calls_summary}\n"
+            "  - Files Claude touched:\n"
+            f"{files_summary}\n"
+            "  - Round number: 1\n"
+            "  (No prior-round feedback on round 1.)\n\n"
+            "Critic returns CONCUR / CONCUR WITH CAVEATS / PUSH BACK / WRONG SHAPE.\n"
+            "  - CONCUR or CONCUR WITH CAVEATS: response lands.\n"
+            "  - PUSH BACK or WRONG SHAPE: revise based on the critic's "
+            f"specific feedback, attempt Stop again. The hook will run round 2.\n"
+            f"  - Maximum {MAX_CRITIC_ROUNDS} rounds per turn. At round "
+            f"{MAX_CRITIC_ROUNDS}: HARD block until /adhoc:trust-me invoked.\n"
+            "One-shot bypass: /adhoc:trust-me. Disable: /adhoc:strict-off."
         )
         details["blocked"] = True
+        details["block_kind"] = "first-round-spawn"
         return True, reason, details
-    # Critic was called; pass through. Record the verdict for the log.
-    verdict = find_critic_verdict(turn_messages)
-    details["verdict"] = verdict
-    return False, "", details
+
+    prior_summary = format_prior_feedback(prior_outputs)
+    escalation_note = ""
+    if next_round == FAST_CRITIC_LAST_ROUND + 1:
+        escalation_note = (
+            f"\n  ESCALATION: rounds 1..{FAST_CRITIC_LAST_ROUND} used the "
+            "fast-critic (Haiku). Rounds "
+            f"{FAST_CRITIC_LAST_ROUND + 1}..{MAX_CRITIC_ROUNDS} use the "
+            "deep-tier pre-stop-critic (opus). Persistent non-CONCUR from "
+            "fast-critic triggered this escalation — the issues are real, "
+            "not Haiku-tier judgment limits.\n"
+        )
+    reason = (
+        f"[adhoc:critic] Round {next_round} of {MAX_CRITIC_ROUNDS} — prior "
+        "round did NOT return CONCUR. Methodical-mode gate-critic requires "
+        f"another round.{escalation_note}\n"
+        "Prior-round feedback:\n"
+        f"{prior_summary}\n\n"
+        f"Spawn the {next_tier} subagent for round {next_round}:\n\n"
+        "  Agent({\n"
+        f"    subagent_type: '{next_tier}',\n"
+        f"    description: 'Methodical-mode gate-critic round {next_round}',\n"
+        "    prompt: <see input contract below>\n"
+        "  })\n\n"
+        "Required spawn-prompt sections:\n"
+        f"  - User prompt: {user_prompt[:600]}"
+        f"{'...' if len(user_prompt) > 600 else ''}\n"
+        "  - Draft response: <quote your revised draft>\n"
+        "  - Tool calls this turn:\n"
+        f"{tool_calls_summary}\n"
+        "  - Files Claude touched:\n"
+        f"{files_summary}\n"
+        f"  - Round number: {next_round}\n"
+        "  - Prior-round feedback (CRITICAL — the critic uses this to check "
+        "you actually addressed prior flags, not just rephrased the same "
+        "dodge):\n"
+        f"{prior_summary}\n\n"
+        "The critic will flag each prior-round item as ADDRESSED, STILL "
+        "FAILING, or REPHRASED-NOT-FIXED. Any non-ADDRESSED prior flag "
+        "guarantees PUSH BACK.\n"
+        f"At round {MAX_CRITIC_ROUNDS}: HARD block. Bypass: /adhoc:trust-me."
+    )
+    details["blocked"] = True
+    details["block_kind"] = "next-round-spawn"
+    details["escalation"] = next_round == FAST_CRITIC_LAST_ROUND + 1
+    return True, reason, details
 
 
 # --- main -----------------------------------------------------------------
@@ -533,9 +803,7 @@ def main() -> int:
     except json.JSONDecodeError:
         return 0
 
-    # Liveness: never block twice on the same stop attempt
-    if event.get("stop_hook_active"):
-        return 0
+    stop_hook_active = bool(event.get("stop_hook_active"))
 
     transcript_path = event.get("transcript_path")
     if not transcript_path or not os.path.exists(transcript_path):
@@ -548,8 +816,7 @@ def main() -> int:
 
     response_text = assistant_text(last_assistant)
 
-    # Recursion guard: if this Stop is for the critic itself, skip all gates
-    if response_text.lstrip().startswith(CRITIC_SENTINEL):
+    if starts_with_any_sentinel(response_text):
         log_event(
             {
                 "ts": datetime.now(timezone.utc).isoformat(),
@@ -575,8 +842,18 @@ def main() -> int:
         response_text, user_prompt, verified_paths, strict_off, trust_me_consumed
     )
     critic_blocked, critic_reason, critic_details = check_critic(
-        response_text, turn_messages, strict_off, trust_me_consumed
+        response_text,
+        user_prompt,
+        turn_messages,
+        verified_paths,
+        strict_off,
+        trust_me_consumed,
     )
+
+    if stop_hook_active:
+        citations_blocked = False
+        uncertainty_blocked = False
+        grounding_blocked = False
 
     log_event(
         {
@@ -587,6 +864,7 @@ def main() -> int:
             "verified_paths_count": len(verified_paths),
             "trust_me_consumed": trust_me_consumed,
             "strict_off": strict_off,
+            "stop_hook_active": stop_hook_active,
             "checks": {
                 "citations": {
                     "blocked": citations_blocked,
