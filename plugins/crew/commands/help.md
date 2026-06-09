@@ -78,8 +78,28 @@ Everything is in `.crew/runs/<run-id>/`:
 
 You don't have to read any of these. Plan and debrief render in chat. The files exist for resume and audit.
 
+## Unattended goal runs
+
+```
+/crew:goal <completion condition>
+```
+
+`/crew:do` does one task and hands back. `/crew:goal` takes a *completion condition* and runs crew's worker → critic → fresh-eyes loop **unattended**, cycle after cycle, until the condition is met — critic AND fresh-eyes both return `pass` — or a safety cap stops it. No plan checkpoint, no budget questions. You set the finish line and walk away.
+
+```
+/crew:goal every test in test/auth passes and `npm run lint` exits 0
+
+/crew:goal the /workloads page renders live pod data, verified in a browser
+```
+
+A `Stop` hook (`goal-gate.py`) enforces it — the run cannot end while the goal is unmet. It exits only on **goal met** (critic + fresh-eyes both pass), **capped** (`--max-cycles`, default 20, or `--max-hours`, default 4), **stuck** (multi-agent reflexion exhausted), or **blocked** (production side-effects without `--allow-production`).
+
+**Before the first run:** an unattended run can't survive an interactive block, so `/crew:goal` refuses to start unless adhoc's strict gates are off — run `/adhoc:strict-off` first if you use adhoc.
+
 ## Other commands
 
+- `/crew:do <intent>` — one task, end to end, with a plan checkpoint
+- `/crew:goal <condition>` — unattended: run until critic + fresh-eyes both pass
 - `/crew:resume <run-id>` — pick up an interrupted run
 - `/crew:list` — show recent runs
 - `/crew:cancel [<run-id>]` — cancel an active run
