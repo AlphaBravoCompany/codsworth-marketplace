@@ -1,11 +1,10 @@
 export const meta = {
   name: 'damu-remediate',
-  description: 'Judges a captured UI for AI-slop tells. Reads per-route screenshots + extracted CSS facts (never the live browser), establishes the app\'s apparent purpose and audience, runs 8 blind per-tell lenses (typography, color, gradients & borders, shape & depth, layout soul, motion, iconography, copy), adversarially verifies every candidate by refuting it as intentional given the app context, runs a completeness critic over uncovered tells and pages, then synthesizes a per-page deliberate/mixed/slop verdict with a ranked, source-anchored change list tagged by confidence and risk. Report only — the orchestrator handles any apply. Governing rule: every tell is sometimes correct, so a finding is real only when the choice looks unmotivated and uniform.',
+  description: 'Judges a captured UI for AI-slop tells. Reads per-route screenshots + extracted CSS facts (never the live browser), establishes the app\'s apparent purpose, audience, and which slop-adjacent patterns are legitimate for it, then runs 9 blind per-tell lenses (typography, color, gradients & borders, shape & depth, layout soul, motion, iconography, copy, readability). Each lens is the sole judge of its tells — it hard-respects the legitimate patterns and self-rates confidence (HIGH only when a choice is clearly unmotivated AND uniform), so nothing is dropped by a separate skeptic and weak findings simply rank low. A completeness critic re-checks uncovered tells and pages, then synthesis produces a per-page deliberate/mixed/slop verdict with a ranked, source-anchored change list tagged by confidence and risk. Report only — the orchestrator handles any apply. Governing rule: every tell is sometimes correct, so a finding is HIGH-confidence only when the choice looks unmotivated and uniform.',
   whenToUse: 'Driven by /damu:remediate after the orchestrator captures screenshots + facts.json for each route. Not run directly.',
   phases: [
     { title: 'Context' },
     { title: 'Lenses' },
-    { title: 'Verify' },
     { title: 'Critic' },
     { title: 'Synthesize' },
   ],
@@ -66,26 +65,18 @@ const FINDINGS_SCHEMA = {
           title: { type: 'string', description: 'Short, specific — name the actual thing seen, not the category.' },
           routes: { type: 'array', items: { type: 'string' }, description: 'Route slug(s) where it appears.' },
           severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+          confidence: { type: 'string', enum: ['HIGH', 'MEDIUM', 'LOW'], description: 'Confidence this is genuinely slop. HIGH only when the choice is clearly unmotivated AND uniform across the UI. Default to MEDIUM/LOW when there is any plausible intentional reading.' },
+          risk: { type: 'string', enum: ['low', 'med', 'high'], description: 'Blast radius of applying the fix.' },
           evidence: { type: 'string', description: 'The fact signal (cite the numbers from facts.json) AND what the screenshot shows. Both.' },
           fix: { type: 'string', description: 'The concrete change to make.' },
           source_hint: { type: 'string', description: 'Best guess at the file/token to change from the source map, or "unknown".' },
+          caveat: { type: 'string', description: 'Any way this could still be an intentional choice — the case against your own finding. Empty if none.' },
         },
-        required: ['slop_id', 'title', 'routes', 'severity', 'evidence', 'fix'],
+        required: ['slop_id', 'title', 'routes', 'severity', 'confidence', 'risk', 'evidence', 'fix'],
       },
     },
   },
   required: ['findings'],
-}
-
-const VERDICT_SCHEMA = {
-  type: 'object',
-  properties: {
-    intentional: { type: 'boolean', description: 'True if this choice is plausibly deliberate / justified for THIS product — i.e. the finding should be DROPPED.' },
-    refutation: { type: 'string', description: 'The case that it is intentional (the "legit when" argument), or why that case fails.' },
-    confidence: { type: 'string', enum: ['HIGH', 'MEDIUM', 'LOW'], description: 'Confidence that this is genuinely slop (only meaningful when intentional=false).' },
-    risk: { type: 'string', enum: ['low', 'med', 'high'], description: 'Blast radius of applying the fix.' },
-  },
-  required: ['intentional', 'refutation', 'confidence', 'risk'],
 }
 
 const REPORT_SCHEMA = {
@@ -106,7 +97,7 @@ const REPORT_SCHEMA = {
     },
     ranked_findings: {
       type: 'array',
-      description: 'The confirmed findings, ordered highest-leverage first.',
+      description: 'All findings, ordered highest-leverage first.',
       items: {
         type: 'object',
         properties: {
@@ -119,7 +110,7 @@ const REPORT_SCHEMA = {
           evidence: { type: 'string' },
           fix: { type: 'string' },
           source_hint: { type: 'string' },
-          caveat: { type: 'string', description: 'The surviving "why it might be fine" note from verification, or empty.' },
+          caveat: { type: 'string', description: 'The "why it might be fine" note carried from the finding, or empty.' },
           auto_applicable: { type: 'boolean', description: 'True only when confidence HIGH, risk low, and not a copy finding (SLOP-08/-11).' },
         },
         required: ['slop_id', 'title', 'routes', 'severity', 'confidence', 'risk', 'evidence', 'fix', 'auto_applicable'],
@@ -149,6 +140,8 @@ const LENSES = [
     focus: 'emojiCount and the screenshots. The same rocket/bolt/shield recycled across features? An icon or emoji on every heading/bullet/button? Icons/emoji that do not match their label (e.g. a rocket next to "Billing")?' },
   { key: 'copy', tells: 'SLOP-08 (empty filler copy)',
     focus: 'fillerHits and the visible text in the screenshots. Headlines/body that are grammatically fine but say nothing ("seamless, cutting-edge, empower")? Surface specifics — but mark copy findings clearly: they are for the human to rewrite, never auto-fixed.' },
+  { key: 'readability', tells: 'SLOP-19 (tiny / low-contrast text)',
+    focus: 'readability.{minFontSize, smallTextShare, minContrast, lowContrastShare} and the screenshots. Is body/caption text too small (sub-14px) or too low-contrast (light gray on white, WCAG ratio under 4.5) to read comfortably? Distinguish genuinely-legible muted text from unreadable. Dense data tables or code can earn a smaller still-legible size — that is legit, not slop.' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -164,63 +157,51 @@ const ctxBlock = ctx
   : ''
 
 // ---------------------------------------------------------------------------
-// Phase: Lenses -> Verify  (pipeline: each lens's findings verify as soon as
-// that lens completes — no barrier between reviewing and verifying)
+// Phase: Lenses — each lens judges blindly and self-rates. No separate skeptic:
+// nothing is dropped after the fact. The guard against false positives lives in
+// the lens itself (hard-respect legit_patterns, conservative confidence).
 // ---------------------------------------------------------------------------
-const verifyFinding = (f, lensKey) =>
-  agent(
-    `${GROUND}${ctxBlock}\n\nYou are an adversarial SKEPTIC. A lens flagged this as AI slop:\n${JSON.stringify(f, null, 2)}\n\nYour job is to REFUTE it — argue it is an intentional, justified choice for THIS product, using the\ncatalog's "legit when" line for ${f.slop_id} and the app context. Read the cited screenshot and the\nfacts yourself; do not take the lens's word. If the refutation holds, set intentional=true (the finding\nis dropped). If it genuinely reads as unmotivated and uniform, set intentional=false and rate confidence\n(that it's slop) and risk (of the fix). Default toward intentional=true when truly unsure — a false flag\nis worse than a missed one. Copy findings (SLOP-08, SLOP-11) can be real but are never low-risk to auto-fix.`,
-    { label: `verify:${lensKey}:${f.slop_id}`, phase: 'Verify', schema: VERDICT_SCHEMA }
-  ).then(v => (v && !v.intentional ? { ...f, verdict: v } : null))
-
-const perLens = await pipeline(
-  LENSES,
-  lens =>
+phase('Lenses')
+const perLens = await parallel(
+  LENSES.map(lens => () =>
     agent(
-      `${GROUND}${ctxBlock}\n\nYou are the ${lens.key.toUpperCase()} lens. You hunt ONLY these tells: ${lens.tells}.\nFocus: ${lens.focus}\n\nRead every relevant screenshot AND the facts for each route. Report only what you can ground in BOTH a\nfact signal and what the image shows. Cite the actual numbers. Ignore every other category — other\nlenses cover those. Finding nothing is a valid, honest result.`,
+      `${GROUND}${ctxBlock}\n\nYou are the ${lens.key.toUpperCase()} lens. You hunt ONLY these tells: ${lens.tells}.\nFocus: ${lens.focus}\n\nRead every relevant screenshot AND the facts for each route. Report only what you can ground in BOTH a\nfact signal and what the image shows — cite the actual numbers. Ignore every other category; other\nlenses cover those.\n\nThere is no second-pass skeptic — you are the only judge of these tells, so be honest in BOTH\ndirections. The APP-CONTEXT lists patterns that are legitimate for THIS product: treat legit_here as\nhard exclusions and do NOT flag them. For anything you do report, set confidence yourself — HIGH only\nwhen the choice is clearly unmotivated AND uniform across the UI; MEDIUM or LOW whenever there is a\nplausible intentional reading — and put that intentional reading in "caveat". Nothing you report gets\ndropped, so a weak finding should be LOW, not omitted and not inflated. Finding nothing is a valid,\nhonest result.`,
       { label: `lens:${lens.key}`, phase: 'Lenses', schema: FINDINGS_SCHEMA }
-    ).then(r => ({ lensKey: lens.key, findings: (r && r.findings) || [] })),
-  res =>
-    res && res.findings.length
-      ? parallel(res.findings.map(f => () => verifyFinding(f, res.lensKey)))
-      : []
+    ).then(r => (r && r.findings) || [])
+  )
 )
-let confirmed = perLens.flat().filter(Boolean)
+let findings = perLens.filter(Boolean).flat()
 
 // ---------------------------------------------------------------------------
-// Phase: Critic — completeness over uncovered tells/pages, plus a false-flag check
+// Phase: Critic — completeness over uncovered tells/pages
 // ---------------------------------------------------------------------------
 phase('Critic')
-const coveredIds = Array.from(new Set(confirmed.map(f => f.slop_id))).sort()
+const coveredIds = Array.from(new Set(findings.map(f => f.slop_id))).sort()
 const critic = await agent(
-  `${GROUND}${ctxBlock}\n\nYou are the COMPLETENESS CRITIC. The lenses confirmed findings for these tells: ${coveredIds.join(', ') || '(none)'}.\nRe-examine the screenshots and facts for: (a) any catalog tell (SLOP-01..18) NOT in that list that is\nclearly present and was missed; (b) any route that got little attention; (c) the inverse — soul-killing\ndefault-ness not captured by a single catalog row (a whole page where nothing looks chosen). Report NEW\nfindings only, same schema, each grounded in a fact signal + the image. Respect the legit_patterns. If\nnothing was missed, return an empty findings array — that's a good outcome.`,
+  `${GROUND}${ctxBlock}\n\nYou are the COMPLETENESS CRITIC. The lenses reported findings for these tells: ${coveredIds.join(', ') || '(none)'}.\nRe-examine the screenshots and facts for: (a) any catalog tell (SLOP-01..19) NOT in that list that is\nclearly present and was missed; (b) any route that got little attention; (c) the inverse — soul-killing\ndefault-ness not captured by a single catalog row (a whole page where nothing looks chosen). Report NEW\nfindings only, same schema (set confidence/risk/caveat yourself, conservatively), each grounded in a\nfact signal + the image. Treat the legit_patterns as hard exclusions. If nothing was missed, return an\nempty findings array — that's a good outcome.`,
   { label: 'critic', phase: 'Critic', schema: FINDINGS_SCHEMA }
 )
-const criticFindings = (critic && critic.findings) || []
-if (criticFindings.length) {
-  const extra = (await parallel(criticFindings.map(f => () => verifyFinding(f, 'critic')))).filter(Boolean)
-  confirmed = confirmed.concat(extra)
-}
+findings = findings.concat((critic && critic.findings) || [])
 
 // ---------------------------------------------------------------------------
 // Phase: Synthesize
 // ---------------------------------------------------------------------------
 phase('Synthesize')
-if (!confirmed.length) {
+if (!findings.length) {
   return {
     runDir,
     findings: [],
     report: {
-      overall_verdict: 'No AI-slop tells survived verification. Either the UI is made with intent, or every candidate was refuted as a legitimate choice for this product.',
-      pages: (ctx?.routes || []).map(r => ({ route: r, verdict: 'deliberate', note: 'No confirmed findings.' })),
+      overall_verdict: 'No AI-slop tells found. Either the UI is made with intent, or what is present is legitimate for this product.',
+      pages: (ctx?.routes || []).map(r => ({ route: r, verdict: 'deliberate', note: 'No findings.' })),
       ranked_findings: [],
     },
   }
 }
 
 const report = await agent(
-  `${GROUND}${ctxBlock}\n\nYou are the SYNTHESIS pass. Here are the confirmed findings (each already survived adversarial\nverification and carries a verdict with confidence + risk + the refutation that failed):\n\n${JSON.stringify(confirmed, null, 2)}\n\nProduce the final report: a one-paragraph overall verdict naming the single biggest lever; a per-page\ndeliberate/mixed/slop verdict; and the findings ranked highest-leverage first. For each ranked finding\ncopy through its evidence/fix/source_hint, set confidence and risk from its verdict, put the surviving\nrefutation into "caveat", and set auto_applicable=true ONLY when confidence is HIGH, risk is low, and it\nis not a copy tell (SLOP-08, SLOP-11). Merge duplicates that name the same element across routes.`,
+  `${GROUND}${ctxBlock}\n\nYou are the SYNTHESIS pass. Here are all the lens + critic findings (each already carries its own\nconfidence, risk, and caveat):\n\n${JSON.stringify(findings, null, 2)}\n\nProduce the final report: a one-paragraph overall verdict naming the single biggest lever; a per-page\ndeliberate/mixed/slop verdict; and the findings ranked highest-leverage first (severity then\nconfidence). For each ranked finding copy through its evidence/fix/source_hint/caveat and its\nconfidence + risk unchanged — do NOT re-litigate or drop any finding. Set auto_applicable=true ONLY when\nconfidence is HIGH, risk is low, and it is not a copy tell (SLOP-08, SLOP-11). Merge exact duplicates\nthat name the same element across routes (union their routes); when merging, keep the HIGHEST confidence.`,
   { label: 'synthesize', phase: 'Synthesize', schema: REPORT_SCHEMA }
 )
 
-return { runDir, findings: confirmed, report: report || { overall_verdict: 'Synthesis failed; raw findings attached.', pages: [], ranked_findings: [] } }
+return { runDir, findings, report: report || { overall_verdict: 'Synthesis failed; raw findings attached.', pages: [], ranked_findings: [] } }

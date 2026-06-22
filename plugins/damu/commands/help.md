@@ -8,7 +8,7 @@ allowed-tools: ["Read"]
 **damu** ("De-AI My UI") strips the tells that make an interface read as *made by an AI in Tailwind* —
 font chaos, the purple-on-black palette, gratuitous parallax, neon gradient borders, everything-is-a-
 24px-card, recycled rocket/bolt/shield icons, the AI-startup serif, out-of-box shadcn, filler copy, and
-the rest. One shared catalog of ~18 tells drives two modes.
+the rest. One shared catalog of ~19 tells drives two modes.
 
 ## Commands
 
@@ -38,18 +38,17 @@ Not "ask Claude if the UI looks AI." A Workflow engine with the same trust mecha
 captured artifacts (screenshots + objective CSS facts), never the live browser:
 
 1. **Context pass** — reads the UI to establish what the product is, who it's for, and which slop-
-   adjacent patterns are *legitimate here*, so later lenses don't flag them.
-2. **8 blind lenses** — typography, color, gradients & borders, shape & depth, layout soul, motion,
-   iconography, copy — each hunting one group of tells, grounded in a fact signal *and* the image.
-3. **Adversarial verify** — every candidate goes to a skeptic that tries to refute it as intentional
-   using the catalog's "legit when" line and the app context. Defaults to keeping it if unsure — a
-   false flag is worse than a miss.
-4. **Completeness critic** — re-examines uncovered tells, glanced-over pages, and whole-page
+   adjacent patterns are *legitimate here*, which the lenses then treat as hard exclusions.
+2. **9 blind lenses** — typography, color, gradients & borders, shape & depth, layout soul, motion,
+   iconography, copy, readability — each hunting one group of tells, grounded in a fact signal *and* the
+   image. Each lens is the sole judge of its tells and self-rates confidence (HIGH only when a choice is
+   clearly unmotivated *and* uniform), so nothing is silently dropped — a weak finding just ranks low.
+3. **Completeness critic** — re-examines uncovered tells, glanced-over pages, and whole-page
    soullessness no single catalog row captures.
 
 ## Output
 
 `prevent`: one pasteable markdown block in chat. `remediate`: a debrief in chat + a saved report and
 all artifacts under `.damu/runs/<timestamp>/`. Every finding carries the fact signal, what the
-screenshot shows, the concrete fix, and the skeptic's surviving "why it might be fine." An empty result
+screenshot shows, the concrete fix, its confidence, and a "why it might be fine" caveat. An empty result
 is honest — a UI made with intent should produce few findings.

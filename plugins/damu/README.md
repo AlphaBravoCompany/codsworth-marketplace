@@ -5,7 +5,7 @@ that means nothing, neon gradient borders, the same rocket/bolt/shield icons rec
 evolutions, every section a 24px card with zero soul, filler copy that says nothing, out-of-box shadcn.
 It smells like "made in Tailwind with love" before the DOM even loads.
 
-**damu** strips those tells. One catalog of ~18 slop signatures, two modes.
+**damu** strips those tells. One catalog of ~19 slop signatures, two modes.
 
 ## Install
 
@@ -54,19 +54,21 @@ it, and defaults to keeping a choice when genuinely unsure. A false flag is wors
 
 Over captured artifacts (never the live browser, so analysis fans out cleanly):
 
-1. **Context** — what is this product, who's it for, what's legitimately fine here.
-2. **8 blind lenses** — typography · color · gradients & borders · shape & depth · layout soul ·
-   motion · iconography · copy — each grounded in a fact signal *and* the screenshot.
-3. **Adversarial verify** — a skeptic tries to refute each flag as intentional.
-4. **Completeness critic** — uncovered tells, glanced-over pages, whole-page soullessness.
-5. **Synthesis** — per-page deliberate / mixed / slop verdict + ranked fixes tagged by confidence,
+1. **Context** — what is this product, who's it for, what's legitimately fine here (the lenses treat
+   those as hard exclusions).
+2. **9 blind lenses** — typography · color · gradients & borders · shape & depth · layout soul ·
+   motion · iconography · copy · readability — each grounded in a fact signal *and* the screenshot, and
+   each the sole judge of its tells: it self-rates confidence (HIGH only when a choice is clearly
+   unmotivated *and* uniform), so nothing gets silently dropped — a weak finding just ranks low.
+3. **Completeness critic** — uncovered tells, glanced-over pages, whole-page soullessness.
+4. **Synthesis** — per-page deliberate / mixed / slop verdict + ranked fixes tagged by confidence,
    risk, and whether they're safe to auto-apply.
 
 Report + artifacts land under `.damu/runs/<timestamp>/`.
 
 ## The catalog
 
-The ~18 tells (`SLOP-01`…`SLOP-18`) live in `skills/slop-catalog/SKILL.md` — each with what to look
+The ~19 tells (`SLOP-01`…`SLOP-19`) live in `skills/slop-catalog/SKILL.md` — each with what to look
 for, why it reads AI, the fix, the fact-signal that detects it, and the "legit when" exceptions. It's
 the single source of truth both modes read from, so prevent ("don't") and remediate ("scan for") never
 drift apart.

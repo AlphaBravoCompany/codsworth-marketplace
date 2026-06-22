@@ -8,15 +8,16 @@ user_invocable: false
 
 This is the reference both damu modes read from. **Prevent** renders the `Fix` lines into a
 prohibition ruleset. **Remediate** runs each entry as a detection lens, using `Detect` for the
-fact-signal and `Legit when` for adversarial verification.
+fact-signal and `Legit when` as the hard exclusions a lens must not flag.
 
 ## The one rule that governs all the others
 
 **Every tell below is sometimes correct.** A fintech dashboard *is* mostly cards. A children's app
 *should* be rounded and emoji-rich. A brand site *may* earn a parallax hero. The slop isn't the
 pattern — it's the pattern applied **by default, without a reason, to everything**. A finding is only
-real when the choice looks unmotivated and uniform. When in doubt, the skeptic wins: refute it as
-intentional. Flagging a justified choice is itself a kind of slop.
+real when the choice looks unmotivated and uniform. When in doubt, rate it LOW confidence rather than
+HIGH — surface it, but don't treat a plausibly-intentional choice as a confident finding. Flagging a
+justified choice as if it were obvious slop is itself a kind of slop.
 
 A second governing read: **soul**. Slop is what you get when every decision defaulted. The opposite
 isn't "more design" — it's *evidence that a human made a choice here and not somewhere else*: one
@@ -206,14 +207,30 @@ unevenly. Absence of any such choice across a whole page is the strongest tell o
 - **Legit when:** a genuinely monochrome brand system, an e-ink/print aesthetic, or a content surface
   where color would distract — done on purpose.
 
+## SLOP-19 — Tiny / low-contrast text
+- **The tell:** body and caption text set too small (sub-14px body, 10–12px captions) and/or too low
+  in contrast (light gray on white, mid-gray on dark) — "elegant and subtle" at the cost of being
+  readable.
+- **Why it reads AI:** models copy the muted-gray, small-caption look from design-system marketing
+  demos without ever checking real legibility; "subtle" is a safe-looking default.
+- **Fix:** body text ~16px (≥14px even in dense UI), captions still readable; meet WCAG AA contrast
+  (4.5:1 for normal text, 3:1 for large). Muted is fine; unreadable is not.
+- **Detect:** `readability.smallTextShare` / `minFontSize` (share of own-text nodes under 14px) and
+  `readability.lowContrastShare` / `minContrast` (WCAG ratio of text vs its effective background).
+- **Legit when:** dense data tables or code where a smaller still-legible size is a deliberate
+  tradeoff; decorative/watermark text that isn't real content; text that's already comfortably large.
+
 ---
 
 ## How remediate uses this
 
 Each lens owns a group of tells and judges **screenshots + extracted CSS facts**, never the live
-browser. It returns candidate findings citing `SLOP-NN`. Every candidate is then handed to a skeptic
-that reads the `Legit when` line and the app's apparent purpose and tries to **refute it as
-intentional**. Survivors are ranked by confidence and risk. Copy findings (SLOP-08, -11) are
+browser. The context pass first lists the patterns that are **legitimate for this specific product**
+(a dashboard's cards, a kids' app's rounding); each lens treats those as hard exclusions and **does not
+flag them**. For everything it does report, the lens cites `SLOP-NN`, self-rates confidence (HIGH only
+when the choice is clearly unmotivated *and* uniform) and risk, and notes any way it could still be
+intentional as a `caveat`. Nothing is dropped after the fact — findings are surfaced and ranked, with
+low-confidence ones simply ranking lower and never auto-applied. Copy findings (SLOP-08, -11) are
 surfaced, never auto-rewritten.
 
 ## How prevent uses this

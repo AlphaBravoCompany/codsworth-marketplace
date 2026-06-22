@@ -1,5 +1,5 @@
 ---
-description: "Scan a running UI for AI-slop tells: Playwright captures screenshots + CSS facts per route, a Workflow engine judges them with adversarial verification, and renders a ranked change list. --apply commits HIGH-confidence low-risk fixes."
+description: "Scan a running UI for AI-slop tells: Playwright captures screenshots + CSS facts per route, a Workflow engine judges them with 9 blind self-rating lenses, and renders a ranked change list. --apply commits HIGH-confidence low-risk fixes."
 argument-hint: "[url or route list] [--apply] [--headed] [--routes=/,/pricing,/app]"
 allowed-tools: ["Bash(git:*)", "Bash(mkdir:*)", "Bash(date:*)", "Bash(pwd:*)", "Bash(ls:*)", "Bash(cat:*)", "Bash(test:*)", "Bash(find:*)", "Bash(grep:*)", "Read", "Write", "Edit", "Glob", "Grep", "AskUserQuestion", "Workflow", "mcp__plugin_playwright_playwright__browser_navigate", "mcp__plugin_playwright_playwright__browser_take_screenshot", "mcp__plugin_playwright_playwright__browser_evaluate", "mcp__plugin_playwright_playwright__browser_resize", "mcp__plugin_playwright_playwright__browser_snapshot", "mcp__plugin_playwright_playwright__browser_wait_for", "mcp__plugin_playwright_playwright__browser_close"]
 ---
@@ -69,9 +69,14 @@ need so findings are grounded in measurements, not just vibes:
 () => {
   const els = Array.from(document.querySelectorAll('body *')).slice(0, 4000);
   const cs = el => getComputedStyle(el);
-  const fonts = {}, radii = [], shadows = [], gradients = [], colors = {}, bgs = {};
-  let cards = 0, fixedBg = 0, gradientText = 0;
+  const fonts = {}, radii = [], shadows = [], gradients = [], colors = {}, bgs = {}, fontSizes = [], contrasts = [];
+  let cards = 0, fixedBg = 0, gradientText = 0, textNodes = 0, smallText = 0, lowContrast = 0;
   const norm = s => (s || '').trim();
+  // WCAG contrast helpers
+  const rgb = c => { const m = (c || '').match(/[\d.]+/g); return m ? m.slice(0, 3).map(Number) : null; };
+  const lum = c => { const r = rgb(c); if (!r) return null; const [R, G, B] = r.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * R + 0.7152 * G + 0.0722 * B; };
+  const ratio = (fg, bg) => { const a = lum(fg), b = lum(bg); if (a == null || b == null) return null; const hi = Math.max(a, b), lo = Math.min(a, b); return (hi + 0.05) / (lo + 0.05); };
+  const effBg = el => { let n = el; while (n) { const b = cs(n).backgroundColor; if (b && b !== 'rgba(0, 0, 0, 0)' && b !== 'transparent') return b; n = n.parentElement; } return 'rgb(255,255,255)'; };
   for (const el of els) {
     const s = cs(el);
     const fam = norm(s.fontFamily); if (fam) fonts[fam] = (fonts[fam] || 0) + 1;
@@ -89,6 +94,17 @@ need so findings are grounded in measurements, not just vibes:
     const hasShadow = s.boxShadow && s.boxShadow !== 'none';
     const pad = s.padding;
     if (r >= 8 && (hasBorder || hasShadow) && /(^|\s)24px|(^|\s)1\.5rem/.test(pad)) cards++;
+    // readability: only elements with their OWN visible text
+    const own = Array.from(el.childNodes).some(n => n.nodeType === 3 && n.textContent.trim().length > 1);
+    if (own && s.visibility !== 'hidden' && s.display !== 'none') {
+      const fs = parseFloat(s.fontSize) || 0;
+      const bold = (parseInt(s.fontWeight, 10) || 400) >= 700;
+      const large = fs >= 24 || (fs >= 18.66 && bold); // WCAG "large text"
+      textNodes++;
+      if (fs) { fontSizes.push(fs); if (fs < 14 && !large) smallText++; }
+      const cr = ratio(col, effBg(el));
+      if (cr != null) { contrasts.push(Math.round(cr * 10) / 10); if (cr < (large ? 3 : 4.5)) lowContrast++; }
+    }
   }
   const top = o => Object.entries(o).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const text = document.body.innerText || '';
@@ -103,6 +119,13 @@ need so findings are grounded in measurements, not just vibes:
     parallaxFixedBg: fixedBg,
     cardLikeCount: cards,
     topTextColors: top(colors), topBgColors: top(bgs),
+    readability: {
+      textNodes,
+      minFontSize: fontSizes.length ? Math.min(...fontSizes) : null,
+      smallTextShare: textNodes ? Math.round(smallText / textNodes * 100) / 100 : 0,
+      minContrast: contrasts.length ? Math.min(...contrasts) : null,
+      lowContrastShare: textNodes ? Math.round(lowContrast / textNodes * 100) / 100 : 0,
+    },
     emojiCount: emoji, fillerHits: filler,
     shadcnTokensPresent: shadcn,
     docHeight: document.body.scrollHeight,
@@ -129,14 +152,15 @@ Call the **Workflow** tool:
 - `args`: an object —
   `{ runDir: "<RUNDIR>", catalogPath: "${CLAUDE_PLUGIN_ROOT}/skills/slop-catalog/SKILL.md", appContext: "<anything the user told you about audience/brand, or empty>" }`
 
-The engine reads `facts.json`, the screenshots, and `source-map.json`; runs a context pass, eight blind
-per-tell lenses, adversarial verification (a skeptic refutes each flag as intentional given the app's
-purpose), a completeness critic, and synthesis. It runs in the background and notifies you — **do not
-poll**. Tell the user once, briefly:
+The engine reads `facts.json`, the screenshots, and `source-map.json`; runs a context pass that
+establishes what's legitimate for this product, 9 blind per-tell lenses that each self-rate confidence
+and hard-respect those legitimate patterns (no separate skeptic — nothing gets dropped, weak findings
+just rank low), a completeness critic, and synthesis. It runs in the background and notifies you — **do
+not poll**. Tell the user once, briefly:
 
 ```
-Scanning <N> routes for AI-slop tells. Context → 8 blind lenses → adversarial verify → critic →
-synthesis. Fans out a couple dozen agents; a few minutes.
+Scanning <N> routes for AI-slop tells. Context → 9 blind lenses → critic → synthesis. Fans out a
+couple dozen agents; a few minutes.
 ```
 
 ## PHASE 3 — render the report
@@ -146,7 +170,7 @@ rendered markdown to `RUNDIR/report.md`, then render this in chat, built **only*
 returned — don't add findings of your own, don't soften the anchors:
 
 ```markdown
-**damu — slop scan of <baseUrl>** · <N> routes · <M> findings survived verification
+**damu — slop scan of <baseUrl>** · <N> routes · <M> findings
 
 > <report.overall_verdict>   (per-page: <page: deliberate | mixed | slop>, …)
 
@@ -156,7 +180,7 @@ returned — don't add findings of your own, don't soften the anchors:
   - where: <route(s)> — <file anchor if known>
   - evidence: <the fact signal + what the screenshot shows>
   - fix: <concrete change>
-  - why it might be fine: <the skeptic's surviving caveat, if any>
+  - why it might be fine: <the finding's caveat, if any>
 - …
 
 **If you want me to apply the safe ones**
@@ -188,9 +212,10 @@ and the suggested change. After the pass, summarize: applied (with commit shas),
 ## NON-NEGOTIABLE RULES
 
 1. **You capture; the engine judges.** Don't freehand a parallel UI opinion in the orchestrator — the
-   value is the blind-lens + adversarial-verify loop. Render what it returns.
-2. **Every tell is sometimes correct.** A finding that survived verification already cleared "is this
-   intentional?" — preserve the skeptic's caveat in the report so the user sees both sides.
+   value is the blind self-rating lenses over grounded facts. Render what it returns.
+2. **Every tell is sometimes correct.** Each finding carries its own confidence and a caveat (the case
+   it might be intentional) — preserve the caveat in the report so the user sees both sides, and lean on
+   confidence/risk, not your own taste, to decide what's worth acting on.
 3. **Preserve every anchor and fact signal verbatim.** They're the trust mechanism.
 4. **Apply only HIGH + low-risk, only on a clean tree, one atomic commit each.** Refuse a dirty tree.
    Never auto-rewrite copy. UI taste is subjective — when unsure, surface, don't change.
