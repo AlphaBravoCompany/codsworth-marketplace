@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
-.claude/settings.local.json
+.claude/
 .idea/
 .vscode/
 *.swp
