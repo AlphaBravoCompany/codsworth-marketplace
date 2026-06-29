@@ -6,13 +6,13 @@
 [0;36m[serena][0m Serena daemon: stopped
 STATUS_STOPPED_EXIT_ONE
 == stop no pidfile ==
-[0;33m[serena][0m Serena daemon is not running (no PID file)
+[0;33m[serena][0m Serena daemon is not running
 STOP_NOOP_EXIT_ZERO
 == start already running ==
-[0;32m[serena][0m Serena daemon already running (PID 19262)
+[0;32m[serena][0m Serena daemon already running (PID 79941)
 START_IDEMPOTENT_EXIT_ZERO
 == status running ==
-[0;32m[serena][0m Serena daemon: running (PID 19262)
+[0;32m[serena][0m Serena daemon: running (PID 79941)
 STATUS_RUNNING_EXIT_ZERO
 == stop running ==
 [0;32m[serena][0m Serena daemon stopped.
