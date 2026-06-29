@@ -1,0 +1,23 @@
+# evidence-cmd: bash -c 'S=plugins/foundry/scripts/serena-daemon.sh; PIDF="$HOME/.serena-daemon.pid"; rm -f "$PIDF"; echo "== status stopped =="; bash "$S" status; [ $? -eq 1 ] && echo STATUS_STOPPED_EXIT_ONE || echo STATUS_UNEXPECTED; echo "== stop no pidfile =="; bash "$S" stop; [ $? -eq 0 ] && echo STOP_NOOP_EXIT_ZERO || echo STOP_UNEXPECTED; echo "== start already running =="; sleep 300 & MP=$!; echo "$MP" > "$PIDF"; bash "$S" start; [ $? -eq 0 ] && echo START_IDEMPOTENT_EXIT_ZERO || echo START_UNEXPECTED; echo "== status running =="; bash "$S" status; [ $? -eq 0 ] && echo STATUS_RUNNING_EXIT_ZERO || echo STATUS_UNEXPECTED; echo "== stop running =="; bash "$S" stop; [ $? -eq 0 ] && echo STOP_EXIT_ZERO || echo STOP_UNEXPECTED; [ -f "$PIDF" ] && echo PIDFILE_REMAINS || echo PIDFILE_REMOVED; kill "$MP" 2>/dev/null || true; echo "== status after stop =="; bash "$S" status; [ $? -eq 1 ] && echo STATUS_STOPPED_EXIT_ONE || echo STATUS_UNEXPECTED; rm -f "$PIDF"'
+# evidence-for: US-001, FR-005, FR-006, FR-007, NFR-001, AC-003
+# evidence-volatile: PID \d+
+
+== status stopped ==
+[0;36m[serena][0m Serena daemon: stopped
+STATUS_STOPPED_EXIT_ONE
+== stop no pidfile ==
+[0;33m[serena][0m Serena daemon is not running (no PID file)
+STOP_NOOP_EXIT_ZERO
+== start already running ==
+[0;32m[serena][0m Serena daemon already running (PID 19262)
+START_IDEMPOTENT_EXIT_ZERO
+== status running ==
+[0;32m[serena][0m Serena daemon: running (PID 19262)
+STATUS_RUNNING_EXIT_ZERO
+== stop running ==
+[0;32m[serena][0m Serena daemon stopped.
+STOP_EXIT_ZERO
+PIDFILE_REMOVED
+== status after stop ==
+[0;36m[serena][0m Serena daemon: stopped
+STATUS_STOPPED_EXIT_ONE

@@ -1,0 +1,12 @@
+# evidence-cmd: bash -c 'S=plugins/foundry/scripts/serena-daemon.sh; grep -q "uname" "$S" && echo OS_DETECT_OK; grep -q "Library/LaunchAgents/com.codsworth.serena.plist" "$S" && echo PLIST_PATH_OK; grep -q "launchctl load" "$S" && echo LAUNCHCTL_LOAD_OK; grep -q "<key>RunAtLoad</key>" "$S" && grep -q "<key>KeepAlive</key>" "$S" && echo RUNATLOAD_KEEPALIVE_OK; grep -q ".config/systemd/user/serena-daemon.service" "$S" && echo SYSTEMD_PATH_OK; grep -q "systemctl --user enable --now" "$S" && echo SYSTEMCTL_ENABLE_OK; grep -q "WantedBy=default.target" "$S" && echo WANTEDBY_OK; grep -q "Restart=on-failure" "$S" && echo SYSTEMD_RESTART_OK; grep -q "uninstall-service" "$S" && echo UNINSTALL_PRESENT'
+# evidence-for: US-002, FR-002, NFR-003, AC-004, AC-005
+
+OS_DETECT_OK
+PLIST_PATH_OK
+LAUNCHCTL_LOAD_OK
+RUNATLOAD_KEEPALIVE_OK
+SYSTEMD_PATH_OK
+SYSTEMCTL_ENABLE_OK
+WANTEDBY_OK
+SYSTEMD_RESTART_OK
+UNINSTALL_PRESENT
