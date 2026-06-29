@@ -6,3 +6,6 @@ __pycache__/
 .vscode/
 *.swp
 .planning/
+/.mcp.json
+/.serena/
+/forge-specs/
