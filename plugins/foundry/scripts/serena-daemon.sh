@@ -118,6 +118,15 @@ cmd_start() {
   fi
 
   # 4. Launch detached.
+  #
+  # The daemon is a machine-level service: validate TLS against the SYSTEM
+  # trust store, not whatever project-scoped SSL_CERT_FILE the launching shell
+  # happens to carry (a dev-CA bundle with no public roots makes every uv
+  # PyPI fetch fail with "invalid peer certificate: UnknownIssuer").
+  # Corporate/proxy CAs belong in the system store (update-ca-certificates).
+  if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+  fi
   nohup uvx --from "$SERENA_PKG" serena start-mcp-server \
     --transport streamable-http \
     --port "$PORT" \
