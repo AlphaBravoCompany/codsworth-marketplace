@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # serena-daemon.sh — Manage the shared Serena MCP HTTP daemon.
 #
-# All Claude Code sessions connect to one long-lived serena-mcp process over
+# All Claude Code sessions connect to one long-lived Serena MCP server over
 # streamable-HTTP at localhost:9121 instead of each session forking its own
 # stdio process. This script starts/stops/inspects that daemon and can install
 # an OS service so it survives reboots.
@@ -29,6 +29,10 @@ fail()  { printf "${RED}[serena]${RESET} %s\n" "$*" >&2; }
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 PORT=9121
+# Serena is not published to PyPI as "serena-mcp" — it is distributed from the
+# oraios/serena git repo and exposes the `serena` console script. Every launch
+# site (manual start, launchd plist) must use `uvx --from "$SERENA_PKG" serena`.
+SERENA_PKG="git+https://github.com/oraios/serena"
 PID_FILE="$HOME/.serena-daemon.pid"
 LOG_FILE="$HOME/.serena-daemon.log"
 PLIST_FILE="$HOME/Library/LaunchAgents/com.codsworth.serena.plist"
@@ -39,7 +43,7 @@ SYSTEMD_FILE="$HOME/.config/systemd/user/serena-daemon.service"
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-# Echo the PID(s) of any serena-mcp process currently bound to $PORT.
+# Echo the PID(s) of any Serena MCP server process currently bound to $PORT.
 #
 # uvx (uv tool run) does NOT serve under the PID captured by `$!` at launch — it
 # spawns/execs the real server under a different PID. So the recorded PID alone
@@ -53,7 +57,9 @@ serena_port_pids() {
   fi
   for p in $pids; do
     cmdline="$(ps -p "$p" -o command= 2>/dev/null || true)"
-    if printf '%s' "$cmdline" | grep -q "serena-mcp"; then
+    # Match the server invocation, not a package name: the real process runs
+    # as `.../bin/serena start-mcp-server ...` (via uvx --from git+.../serena).
+    if printf '%s' "$cmdline" | grep -q "start-mcp-server"; then
       out="$out $p"
     fi
   done
@@ -84,7 +90,7 @@ cmd_start() {
       local p cmdline
       for p in $port_pids; do
         cmdline="$(ps -p "$p" -o command= 2>/dev/null || true)"
-        if printf '%s' "$cmdline" | grep -q "serena-mcp"; then
+        if printf '%s' "$cmdline" | grep -q "start-mcp-server"; then
           found_serena="$p"
         fi
       done
@@ -112,7 +118,7 @@ cmd_start() {
   fi
 
   # 4. Launch detached.
-  nohup uvx serena-mcp start-mcp-server \
+  nohup uvx --from "$SERENA_PKG" serena start-mcp-server \
     --transport streamable-http \
     --port "$PORT" \
     >> "$LOG_FILE" 2>&1 &
@@ -143,9 +149,9 @@ cmd_start() {
 }
 
 # ── stop ──────────────────────────────────────────────────────────────────────
-# Terminates the real serena-mcp process and removes the PID file.
+# Terminates the real Serena server process and removes the PID file.
 #
-# Targets BOTH the recorded PID and any serena-mcp process bound to the port.
+# Targets BOTH the recorded PID and any Serena server bound to the port.
 # The recorded PID alone is insufficient: uvx serves the daemon under a PID that
 # differs from the launcher's $!, so killing only the recorded PID would leave
 # the actual server running (the failure this guards against).
@@ -155,7 +161,7 @@ cmd_stop() {
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   fi
 
-  # Build the target set: recorded PID (if alive) plus every serena-mcp on $PORT.
+  # Build the target set: recorded PID (if alive) plus every Serena server on $PORT.
   # Duplicates are harmless — a second kill on the same PID is a no-op.
   local targets=""
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -258,7 +264,9 @@ cmd_install_service() {
   <key>ProgramArguments</key>
   <array>
     <string>$uvx_path</string>
-    <string>serena-mcp</string>
+    <string>--from</string>
+    <string>$SERENA_PKG</string>
+    <string>serena</string>
     <string>start-mcp-server</string>
     <string>--transport</string>
     <string>streamable-http</string>
@@ -361,7 +369,7 @@ Subcommands:
   install-service    Install OS service (launchd on macOS, systemd on Linux)
   uninstall-service  Remove OS service
 
-Daemon command: uvx serena-mcp start-mcp-server --transport streamable-http --port 9121
+Daemon command: uvx --from git+https://github.com/oraios/serena serena start-mcp-server --transport streamable-http --port 9121
 PID file:       ~/.serena-daemon.pid
 Log file:       ~/.serena-daemon.log
 Port:           9121
