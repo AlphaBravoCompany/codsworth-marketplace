@@ -105,6 +105,16 @@
       "author": {
         "name": "AlphaBravo"
       }
+    },
+    {
+      "name": "ux-review",
+      "source": "./plugins/ux-review",
+      "description": "Experiential UX review that drives the RUNNING app as a real user — not a code read. Reading source is a code review and structurally cannot find experience defects: a mode that doesn't do what its label claims, an overlay anchored to the wrong thing (the viewport center instead of the point you chose), a feature that works on the default screen and silently breaks in another state, or a table-stakes affordance that's simply absent. /ux-review:run launches the app in a real browser, self-configures by discovering what the product is, who it's for, and what it promises (so it's told nothing and stays generic), then builds a coverage grid — every screen × state × variant × viewport × input modality — and drives real jobs-to-be-done end-to-end through five sharp lenses: promise-vs-delivery, default-vs-buried, anchor/subject, every-state-not-the-happy-one, and what's-missing, plus the classic usability heuristics framed experientially. Adversarial states (empty/error/offline/slow/denied/first-run), a keyboard + screen-reader + mobile sweep, and a continuous console/network watch catch silent failures. A completeness critic loops until a full pass finds nothing new. Findings are ranked by user harm and logged as job → expected vs actual (+screenshot) → why-it-hurts → severity, closed by an auditable coverage report. Drives real browsers via Playwright MCP; the persona-driver subagent fans out one driver per persona × surface for exhaustive parallel coverage. Report only — it never edits the app's code.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "author": {
+        "name": "AlphaBravo"
+      }
     }
   ]
 }
