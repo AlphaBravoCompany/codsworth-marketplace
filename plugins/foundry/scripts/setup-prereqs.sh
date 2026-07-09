@@ -124,34 +124,28 @@ if "playwright" not in servers:
         "args": ["@playwright/mcp@latest", "--caps", "vision,devtools", "--output-dir", ".playwright-mcp"]
     }
 
-# Serena MCP (LSP wiring for TRACE)
-if "serena" not in servers:
-    servers["serena"] = {
-        "command": "uvx",
-        "args": ["serena-mcp"]
-    }
+# Serena MCP — shared HTTP daemon (all sessions connect; none fork)
+servers["serena"] = {"type": "http", "url": "http://localhost:9121/mcp"}
 
 with open(mcp_file, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 
-print(f"Configured: foundry, playwright, serena in {mcp_file}")
+print(f"Configured: foundry, playwright, serena (HTTP) in {mcp_file}")
 PYEOF
 
 ok "MCP servers configured in $MCP_FILE"
 
 # ── Serena project config ────────────────────────────────────────────────────
 SERENA_DIR="$PROJECT_ROOT/.serena"
-if [ ! -d "$SERENA_DIR" ]; then
-    info "Creating Serena project config..."
-    mkdir -p "$SERENA_DIR"
-    cat > "$SERENA_DIR/project.yml" << 'SERENA_EOF'
+info "Writing Serena project config..."
+mkdir -p "$SERENA_DIR"
+cat > "$SERENA_DIR/project.yml" << 'SERENA_EOF'
 # Serena LSP configuration for Foundry TRACE verification
 languages:
   - name: go
   - name: typescript
   - name: python
-  - name: javascript
 
 ignored_paths:
   - node_modules
@@ -161,11 +155,11 @@ ignored_paths:
   - build
   - __pycache__
   - .venv
+  - forge-specs
+  - foundry-archive
+  - .serena
 SERENA_EOF
-    ok "Serena config created at $SERENA_DIR/project.yml"
-else
-    ok "Serena config already exists"
-fi
+ok "Serena config written at $SERENA_DIR/project.yml"
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
@@ -173,7 +167,7 @@ printf "${BOLD}${GREEN}Foundry setup complete.${RESET}\n"
 echo ""
 echo "Installed:"
 echo "  Plugins:     ralph-loop, hookify"
-echo "  MCP Servers: foundry (local), playwright (npx), serena (uvx)"
+echo "  MCP Servers: foundry (local), playwright (npx), serena (HTTP)"
 echo "  Config:      $MCP_FILE, $SERENA_DIR/project.yml"
 echo ""
 echo "Commands available:"
