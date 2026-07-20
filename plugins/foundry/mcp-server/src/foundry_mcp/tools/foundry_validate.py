@@ -221,13 +221,50 @@ def foundry_validate_castings(
     dim4_issues = []
     all_artifacts: set[str] = set()
     all_link_targets: set[str] = set()
+    # Expected must_haves shapes (what Decompose should emit):
+    #   - artifacts:  [{"path": "src/foo.ts", "min_lines": 20}, ...]
+    #   - key_links:  [{"from": "src/a.ts", "to": "src/b.ts"}, ...]
+    #                 (each link names the two endpoints — the "from" source
+    #                  and the "to" target — of one wiring connection).
+    # Decompose occasionally emits a plain STRING instead (a free-text link or
+    # artifact description like "LoginForm -> /api/login"). A string has no
+    # .get(), so the reads below would raise
+    #   AttributeError: 'str' object has no attribute 'get'
+    # and the entire 10-dimension report would fail to render at F0.9. Guard
+    # each read with isinstance(...): a dict entry behaves EXACTLY as before,
+    # while a string entry is accepted as a plain description and recorded as a
+    # NON-BLOCKING warning (severity "warning", kept out of dim4_ok) that names
+    # the casting and the offending entry.
     for c in castings:
+        cid = c.get("id", "?")
+        title = c.get("title", "Untitled")
         must_haves = c.get("must_haves", {})
         for art in must_haves.get("artifacts", []):
-            all_artifacts.add(art.get("path", ""))
+            if isinstance(art, dict):
+                all_artifacts.add(art.get("path", ""))
+            else:
+                all_artifacts.add(str(art))
+                dim4_issues.append({
+                    "casting": cid, "title": title, "severity": "warning",
+                    "issue": (
+                        f"Casting #{cid} '{title}': must_haves.artifacts entry is a "
+                        f"string, not a {{path: ...}} object ({art!r}) — treated as a "
+                        f"plain artifact description"
+                    ),
+                })
         for link in must_haves.get("key_links", []):
-            all_link_targets.add(link.get("from", ""))
-            all_link_targets.add(link.get("to", ""))
+            if isinstance(link, dict):
+                all_link_targets.add(link.get("from", ""))
+                all_link_targets.add(link.get("to", ""))
+            else:
+                dim4_issues.append({
+                    "casting": cid, "title": title, "severity": "warning",
+                    "issue": (
+                        f"Casting #{cid} '{title}': must_haves.key_links entry is a "
+                        f"string, not a {{from, to}} object ({link!r}) — treated as a "
+                        f"plain link description"
+                    ),
+                })
 
     # Check if any casting has artifacts but no key_links (isolated)
     for c in castings:
@@ -241,8 +278,27 @@ def foundry_validate_castings(
                                "issue": f"Has {len(artifacts)} artifacts but no key_links — isolated"})
             revision_hints.append(f"Casting #{cid} '{title}': add key_links showing how artifacts connect")
 
-    dim4_ok = len(dim4_issues) == 0
-    dimensions["key_links_planned"] = {"ok": dim4_ok, "issues": dim4_issues}
+    # String-entry warnings are non-blocking: exclude them from dim4_ok and
+    # surface them as a warning-severity entry in the top-level issues list,
+    # which the overall `passed` computation ignores (it fails only on
+    # severity=="error"). Non-warning issues (isolated castings) keep their
+    # prior weight, so dict-entry behavior is unchanged.
+    dim4_warnings = [i for i in dim4_issues if i.get("severity") == "warning"]
+    dim4_errors = [i for i in dim4_issues if i.get("severity") != "warning"]
+    dim4_ok = len(dim4_errors) == 0
+    if dim4_warnings:
+        issues.append({
+            "dimension": "key_links_planned",
+            "severity": "warning",
+            "message": (
+                f"{len(dim4_warnings)} must_haves key_links/artifacts entr"
+                f"{'y is a string' if len(dim4_warnings) == 1 else 'ies are strings'}, "
+                f"not object(s) — treated as plain description(s) (non-blocking)"
+            ),
+        })
+    dimensions["key_links_planned"] = {
+        "ok": dim4_ok, "issues": dim4_issues, "warnings": len(dim4_warnings),
+    }
 
     # ── Dimension 5: Scope Sanity ──
     dim5_issues = []
