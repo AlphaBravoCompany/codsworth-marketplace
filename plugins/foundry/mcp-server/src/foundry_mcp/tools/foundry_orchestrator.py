@@ -54,27 +54,162 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _count_spec_requirements(project_root: str) -> int:
-    """Count requirement IDs (US-N, FR-N, NFR-N, AC-N, VC-N) in the spec file."""
+# Single compiled source of truth for the requirement-ID grammar. Used by
+# BOTH the requirement count and the requirement-ID list so the P3 verdict
+# synthesis writes exactly one row per ID the DONE gate's verdict_coverage
+# check counts (analog note 3: do not fork a second regex/path resolver).
+_REQ_ID_RE = re.compile(r"\b(?:US|FR|NFR|AC|VC|IR|TR)-\d+(?:\.\d+)?\b")
+
+
+def _resolve_spec_path(project_root: str) -> Path | None:
+    """Resolve the active run's spec.md path, or None if unresolvable.
+
+    Prefers ``<run_dir>/spec.md``; falls back to ``state.json['spec_path']``
+    resolved against ``project_root``. Single code path shared by the
+    requirement COUNT and the requirement-ID LIST so the two never drift.
+    """
     fdir = get_run_dir(project_root)
     if not fdir:
-        return 0
+        return None
     spec_path = fdir / "spec.md"
-    if not spec_path.exists():
-        state = _load_json(fdir / "state.json")
-        sp = state.get("spec_path", "")
-        if sp:
-            candidate = Path(project_root) / sp
-            if candidate.exists():
-                spec_path = candidate
-            else:
-                return 0
-        else:
-            return 0
+    if spec_path.exists():
+        return spec_path
+    state = _load_json(fdir / "state.json")
+    sp = state.get("spec_path", "")
+    if sp:
+        candidate = Path(project_root) / sp
+        if candidate.exists():
+            return candidate
+    return None
 
-    text = spec_path.read_text(encoding="utf-8")
-    req_ids = set(re.findall(r"\b(?:US|FR|NFR|AC|VC|IR|TR)-\d+(?:\.\d+)?\b", text))
-    return len(req_ids)
+
+def _spec_requirement_ids(project_root: str) -> list[str]:
+    """Return the sorted unique requirement IDs (US/FR/NFR/AC/VC/IR/TR-N).
+
+    The id source for P3 verdict synthesis. Uses the SAME path resolution
+    and regex as ``_count_spec_requirements`` (which now delegates here) so
+    synthesizing one VERIFIED row per id keeps ``verdict_coverage`` in
+    lock-step with the DONE gate's ``_count_spec_requirements`` read.
+    """
+    spec_path = _resolve_spec_path(project_root)
+    if spec_path is None:
+        return []
+    try:
+        text = spec_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return sorted(set(_REQ_ID_RE.findall(text)))
+
+
+def _count_spec_requirements(project_root: str) -> int:
+    """Count requirement IDs (US-N, FR-N, NFR-N, AC-N, VC-N) in the spec file."""
+    return len(_spec_requirement_ids(project_root))
+
+
+def _prove_is_clean(fdir: Path, project_root: str) -> bool:
+    """True when the recorded PROVE stream is clean: 0 findings AND >=95%
+    requirement coverage.
+
+    Reads the aggregate counts ``foundry_mark_stream`` stamps into
+    ``.prove-complete`` (which stores ONLY aggregate counts, not
+    per-requirement verdicts — the reason P3 must synthesize). Mirrors the
+    >=95% coverage threshold enforced at stream-mark time.
+    """
+    marker = fdir / ".prove-complete"
+    if not marker.exists():
+        return False
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    items_checked = 0
+    findings: int | None = None
+    for line in text.splitlines():
+        if line.startswith("items_checked="):
+            try:
+                items_checked = int(line.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+        elif line.startswith("findings="):
+            try:
+                findings = int(line.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                pass
+    if findings is None or findings != 0:
+        return False
+    spec_count = _count_spec_requirements(project_root)
+    if spec_count > 0 and items_checked < spec_count * 0.95:
+        return False
+    return True
+
+
+def _synthesize_clean_prove_verdicts(
+    fdir: Path, project_root: str, cycle: int = 0
+) -> int:
+    """On a clean PROVE, write a VERIFIED verdict row for every spec
+    requirement ID that lacks one. Returns the count synthesized.
+
+    Rows match the Foundry-Verdict schema (foundry.py record shape):
+    id / verdict / evidence / spec_text_cited / code_location / cycle /
+    recorded_at. Existing rows are left untouched — never downgraded, never
+    duplicated — so a real ASSAY verdict is preserved and ``verdict_coverage``
+    never double-counts (analog note 7: preserve id-dedup).
+    """
+    ids = _spec_requirement_ids(project_root)
+    if not ids:
+        return 0
+    verdicts_path = fdir / "verdicts.json"
+    verdicts = _load_json(verdicts_path)
+    requirements = verdicts.get("requirements")
+    if not isinstance(requirements, list):
+        requirements = []
+    existing_ids = {r.get("id") for r in requirements if isinstance(r, dict)}
+    now = _now()
+    synthesized = 0
+    for rid in ids:
+        if rid in existing_ids:
+            continue
+        requirements.append(
+            {
+                "id": rid,
+                "verdict": "VERIFIED",
+                "evidence": (
+                    "Auto-verified on clean PROVE "
+                    "(≥95% coverage, 0 findings)."
+                ),
+                "spec_text_cited": "",
+                "code_location": "",
+                "cycle": cycle,
+                "recorded_at": now,
+            }
+        )
+        synthesized += 1
+    if synthesized:
+        verdicts["requirements"] = requirements
+        _save_json(verdicts_path, verdicts)
+    return synthesized
+
+
+# --- P4 (FR-005 / ST-002): passing-gate → guidance-state advance ---
+#
+# Maps each _compute_next_action "transition_*" action to the Foundry-Gate
+# phase whose passing should advance the guidance state. When that gate has
+# passed (recorded via the ``.gate-passed`` marker), the next Foundry-Next
+# tells the lead the gate is satisfied and to proceed to the transition step
+# instead of re-running the now-satisfied gate.
+_ACTION_TO_GATE = {
+    "transition_to_cast": "cast",
+    "transition_to_inspect": "inspect",
+    "transition_to_grind": "grind",
+    "transition_to_assay": "assay",
+    "transition_to_temper": "temper",
+    "transition_to_done": "done",
+}
+
+
+def _expected_gate_for_action(action: str) -> str | None:
+    """Return the gate phase a given transition action asks the lead to run."""
+    return _ACTION_TO_GATE.get(action)
 
 
 # --- Phase gate ---
@@ -303,6 +438,18 @@ def foundry_gate(
     if not passed:
         result["reason"] = reason
         result["hint"] = hint
+    else:
+        # P4 (FR-005 / ST-002): a passing gate advances the guidance state.
+        # Record which gate passed so the next Foundry-Next emits the
+        # transition step instead of re-running this now-satisfied gate.
+        # Cleared by _update_phase when the phase actually advances.
+        try:
+            (fdir / ".gate-passed").write_text(
+                json.dumps({"phase": phase, "at": _now()}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
     return result
 
 
@@ -605,6 +752,11 @@ def _update_phase(fdir: Path, new_phase: str) -> None:
                 pass
 
     _save_json(state_path, state)
+
+    # P4 (ST-002): a real phase advance supersedes any pending gate-passed
+    # guidance marker. Clear it so the next Foundry-Next emits the NEW phase's
+    # fresh imperative rather than a stale "gate already passed" note.
+    (fdir / ".gate-passed").unlink(missing_ok=True)
 
 
 def foundry_mark_phase_complete(
@@ -1288,16 +1440,50 @@ def foundry_next_action(
     if trace_skip_decision and trace_skip_decision.get("skip"):
         result["trace_skip"] = trace_skip_decision
 
-    # Stall watchdog. Read the previous `.next-action-called` timestamp BEFORE
+    # P4 (FR-005 / ST-002): passing-gate → guidance-state advance. If the gate
+    # for the current transition action already passed (recorded in
+    # ``.gate-passed`` by foundry_gate), surface that the gate is satisfied so
+    # the lead proceeds to the transition step rather than re-running the gate.
+    gate_advance_note = None
+    if fdir_stamp and fdir_stamp.exists():
+        expected_gate = _expected_gate_for_action(result.get("action", ""))
+        if expected_gate:
+            gp_marker = fdir_stamp / ".gate-passed"
+            if gp_marker.exists():
+                try:
+                    gp_data = json.loads(gp_marker.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    gp_data = {}
+                if gp_data.get("phase") == expected_gate:
+                    result["gate_advanced"] = {
+                        "passed_gate": expected_gate,
+                        "action": result.get("action", ""),
+                    }
+                    gate_advance_note = (
+                        f"✅ Foundry-Gate(phase='{expected_gate}') ALREADY "
+                        f"PASSED — do NOT re-run it. Proceed directly to the "
+                        f"transition step (Foundry-Phase / state update) in the "
+                        f"imperative below."
+                    )
+
+    # Stall watchdog. Read the previous `.last-next-at` timestamp BEFORE
     # overwriting it, compute the delta, and if the gap is large surface a
     # visible STALL WARNING at the very top of the instructions. This converts
     # silent extended-thinking runaway into an explicit, logged event the lead
     # must acknowledge on its next turn. State tracking via the existing MCP
     # tool — no hooks.
+    #
+    # P4 (FR-005 / FR-008): the stall timestamp lives in its OWN marker
+    # (``.last-next-at``), decoupled from the ``.next-action-called`` ordering
+    # token that foundry_gate / foundry_mark_phase_complete unlink. Because
+    # gate/phase no longer destroy the stall timestamp, the stall clock keeps
+    # measuring true Foundry-Next → Foundry-Next gaps across intervening
+    # gate/phase/read-only calls, so real stalls still warn (FR-008) while
+    # ordering-token consumption no longer blinds the watchdog.
     stall_warning = None
     fdir_stall = get_run_dir(project_root)
     if fdir_stall and fdir_stall.exists():
-        marker = fdir_stall / ".next-action-called"
+        marker = fdir_stall / ".last-next-at"
         if marker.exists():
             try:
                 prev_iso = marker.read_text(encoding="utf-8").strip()
@@ -1374,6 +1560,8 @@ def foundry_next_action(
     parts.append("\n═══ YOUR NEXT ACTION ═══\n")
     if stall_warning:
         parts.append(stall_warning)
+    if gate_advance_note:
+        parts.append(gate_advance_note)
     parts.append(imperative_header)
     parts.append("")
     parts.append("CONTEXT:")
@@ -1406,7 +1594,16 @@ def foundry_next_action(
 
     fdir = get_run_dir(project_root)
     if fdir and fdir.exists():
-        (fdir / ".next-action-called").write_text(f"{_now()}\n", encoding="utf-8")
+        now_stamp = f"{_now()}\n"
+        # Ordering token: armed here, consumed (unlinked) by foundry_gate /
+        # foundry_mark_phase_complete to prove Foundry-Next preceded a gate
+        # or phase transition.
+        (fdir / ".next-action-called").write_text(now_stamp, encoding="utf-8")
+        # Stall timestamp: written on EVERY Foundry-Next, read on the NEXT
+        # Foundry-Next to measure the gap. Never unlinked by gate/phase, so
+        # the watchdog is decoupled from ordering-token consumption (FR-005 /
+        # FR-008). Read-only intervening calls do not touch it.
+        (fdir / ".last-next-at").write_text(now_stamp, encoding="utf-8")
 
     return result
 
@@ -1886,6 +2083,17 @@ def _compute_next_action(project_root: str) -> dict:
                     "agent_config": GRIND_AGENT_CONFIG,
                 },
             }
+
+        # P3 (FR-003 / FR-004 / ST-001): the auto-pass path. ``.prove-complete``
+        # stores only aggregate counts, so verdicts.json may be empty (or
+        # partial) even after a clean PROVE — which would make the DONE gate's
+        # verdict_coverage read 0/N and block the transition it just enabled.
+        # On a clean PROVE, synthesize a VERIFIED verdict for every spec
+        # requirement ID BEFORE emitting the auto-pass so the two gates agree.
+        if _prove_is_clean(fdir, project_root):
+            _synthesize_clean_prove_verdicts(
+                fdir, project_root, cycle=state.get("cycle", 0)
+            )
 
         temper = state.get("temper", False)
         if temper:
