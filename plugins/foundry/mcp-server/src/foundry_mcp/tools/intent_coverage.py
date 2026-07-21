@@ -1,6 +1,6 @@
 """Phase 8 / INTENT-01 — Foundry-Intent-Coverage MCP tool.
 
-Thin subprocess wrapper around plugins/foundry/scripts/validate-intent-coverage.py.
+In-process wrapper around foundry_mcp.scripts.validate_intent_coverage.
 Returns structured result with action='proceed_to_validate' on pass,
 action='redecompose' on any DROPPED verdict, action='rerun_intent_carrier'
 when intent-coverage.json is missing.
@@ -20,27 +20,79 @@ Locked decisions (per 08-RESEARCH.md Open Questions 2 + 3):
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
-import subprocess
 from pathlib import Path
 
 from foundry_mcp.tools.foundry_state import get_run_dir
 
-# Path resolution: from plugins/foundry/mcp-server/src/foundry_mcp/tools/intent_coverage.py
-#   parents[0] = tools/
-#   parents[1] = foundry_mcp/
-#   parents[2] = src/
-#   parents[3] = mcp-server/
-#   parents[4] = foundry/
-# So parents[4] / "scripts" / "validate-intent-coverage.py" resolves to
-# plugins/foundry/scripts/validate-intent-coverage.py — verified manually
-# against the test_intent_coverage.py REPO_ROOT discipline (tests/ is at
-# parents[1]=mcp-server, so REPO_ROOT=parents[4]=repo-root in that file).
-VALIDATOR_SCRIPT = (
-    Path(__file__).resolve().parents[4]
-    / "scripts"
-    / "validate-intent-coverage.py"
-)
+
+def _save_json_atomic(path: Path, data: dict) -> None:
+    """Atomic JSON write — write to .tmp then rename.
+
+    Mirrors foundry.py:_save_json discipline (write to sibling .tmp then
+    os-level rename) so a concurrent reader never observes a truncated
+    manifest.json.
+    """
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    tmp.rename(path)
+
+
+def _run_validator_in_process(
+    coverage_path: Path, spec_path: Path | None
+) -> tuple[int, str, str] | None:
+    """Call the canonical validator's main() in-process.
+
+    Imports foundry_mcp.scripts.validate_intent_coverage.main and invokes
+    it with an explicit argv list, capturing stdout/stderr. The subprocess
+    is removed entirely (FR-001): no ``"python"``-vs-``sys.executable``
+    mismatch and no dependency on plugins/foundry/scripts/ being shipped in
+    the wheel (GI-002 / FR-007).
+
+    Returns (exit_code, stdout, stderr) on a clean run, or ``None`` when the
+    validator is missing or errors — the caller maps ``None`` to an explicit
+    tooling error (CT-002), never a fake redecompose.
+
+    main(argv) slices argv[1:] and returns an int; it only calls sys.exit
+    inside its ``__main__`` guard, so the only SystemExit reachable here is
+    argparse's own usage-error path, which we treat as a tooling error.
+    """
+    try:
+        from foundry_mcp.scripts.validate_intent_coverage import main
+    except Exception:
+        return None
+
+    argv: list[str] = ["validate-intent-coverage", str(coverage_path)]
+    if spec_path is not None and spec_path.exists():
+        argv += ["--spec", str(spec_path)]
+    # tool-call-log is advisory — passed only when the orchestrator has
+    # captured an agent tool-call log for this run (08-RESEARCH.md Open
+    # Question 5; advisory shape locked per Phase 7 precedent).
+
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(
+            err_buf
+        ):
+            exit_code = main(argv)
+    except SystemExit as exc:  # argparse usage error — non-verdict exit.
+        code = exc.code if isinstance(exc.code, int) else 2
+        return None if code not in (0, 1) else (
+            code,
+            out_buf.getvalue(),
+            err_buf.getvalue(),
+        )
+    except Exception:  # noqa: BLE001 — any validator crash is a tooling error.
+        return None
+
+    if not isinstance(exit_code, int) or exit_code not in (0, 1):
+        # A non-int / non-verdict return is not a legitimate PASS/FAIL —
+        # surface as a tooling error rather than mis-routing to redecompose.
+        return None
+    return exit_code, out_buf.getvalue(), err_buf.getvalue()
 
 
 def foundry_intent_coverage(project_root: str = ".") -> dict:
@@ -71,14 +123,26 @@ def foundry_intent_coverage(project_root: str = ".") -> dict:
             ),
         }
 
-    cmd = ["python", str(VALIDATOR_SCRIPT), str(coverage_path)]
-    if spec_path.exists():
-        cmd += ["--spec", str(spec_path)]
-    # tool-call-log is advisory — passed only when the orchestrator has
-    # captured an agent tool-call log for this run (08-RESEARCH.md Open
-    # Question 5; advisory shape locked per Phase 7 precedent).
-
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    # FR-001 / CT-002: run the validator IN-PROCESS. A missing or erroring
+    # validator returns None here and is surfaced as an explicit tooling
+    # error below — NEVER a fake action=redecompose.
+    validator_result = _run_validator_in_process(coverage_path, spec_path)
+    if validator_result is None:
+        return {
+            "passed": False,
+            "action": "tooling_error",
+            "reason": (
+                "intent-coverage validator missing or errored — "
+                "foundry_mcp.scripts.validate_intent_coverage.main() could "
+                "not be imported or did not return a valid exit code. This "
+                "is a tooling failure, NOT a spec-coverage problem; do not "
+                "re-decompose."
+            ),
+            "validator_exit": None,
+            "validator_stdout": "",
+            "validator_stderr": "",
+        }
+    validator_exit, validator_stdout, validator_stderr = validator_result
 
     try:
         coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
@@ -87,8 +151,9 @@ def foundry_intent_coverage(project_root: str = ".") -> dict:
             "passed": False,
             "action": "rerun_intent_carrier",
             "reason": "intent-coverage.json malformed — agent must re-emit",
-            "validator_stdout": result.stdout,
-            "validator_exit": result.returncode,
+            "validator_stdout": validator_stdout,
+            "validator_stderr": validator_stderr,
+            "validator_exit": validator_exit,
         }
 
     matrix = coverage.get("matrix", [])
@@ -102,11 +167,40 @@ def foundry_intent_coverage(project_root: str = ".") -> dict:
         1 for c in matrix if c.get("verdict") == "PROPAGATED"
     )
 
-    if result.returncode == 0 and not dropped:
+    if validator_exit == 0 and not dropped:
         # Locked decision (Open Question 2): stamp marker file on pass.
         # Orchestrator's F0.9 sub-check 7m reads this marker to confirm
         # F0.7 actually ran (anti-skip discipline).
         (fdir / ".f07-intent-clean").write_text("ok\n", encoding="utf-8")
+
+        # FR-009 / Bug2: append manifest.intent_coverage_summary to
+        # castings/manifest.json atomically, alongside the .f07-intent-clean
+        # stamp, so F0.9 sub-check 7m (foundry_validate.py:570-581) sees the
+        # key present. The summary reuses the already-computed locals; 7m
+        # only requires the key to exist as a non-null object.
+        summary = {
+            "stream": "INTENT-01",
+            "phase": "F0.7",
+            "passed": True,
+            "propagated_count": propagated_count,
+            "paraphrased_count": len(paraphrased),
+            "paraphrased_answers": paraphrased,
+            "dropped_answers": [],
+            "matrix_path": str(coverage_path),
+        }
+        manifest_path = fdir / "castings" / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(
+                    manifest_path.read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError:
+                manifest = {}
+            if not isinstance(manifest, dict):
+                manifest = {}
+            manifest["intent_coverage_summary"] = summary
+            _save_json_atomic(manifest_path, manifest)
+
         return {
             "passed": True,
             "action": "proceed_to_validate",
@@ -114,6 +208,7 @@ def foundry_intent_coverage(project_root: str = ".") -> dict:
             "paraphrased_answers": paraphrased,
             "dropped_answers": [],
             "matrix_path": str(coverage_path),
+            "intent_coverage_summary": summary,
         }
 
     # Build redecompose_hints: per dropped answer_id, name the first
@@ -153,8 +248,9 @@ def foundry_intent_coverage(project_root: str = ".") -> dict:
         "action": "redecompose",
         "dropped_answers": dropped,
         "redecompose_hints": redecompose_hints,
-        "validator_stdout": result.stdout,
-        "validator_exit": result.returncode,
+        "validator_stdout": validator_stdout,
+        "validator_stderr": validator_stderr,
+        "validator_exit": validator_exit,
         "hint": (
             "F0.5 DECOMPOSE must re-run with these A-NNN entries as "
             "additional citation anchors. Do NOT amend casting prompts "

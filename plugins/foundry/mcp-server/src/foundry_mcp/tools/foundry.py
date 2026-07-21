@@ -128,6 +128,7 @@ def foundry_init(
     resume: str | None = None,
     ticket: str = "",
     description: str = "",
+    url: str = "",
     project_root: str = ".",
 ) -> dict:
     """Initialize a foundry run under foundry-archive/.
@@ -136,6 +137,11 @@ def foundry_init(
         resume: Name of existing run to resume (e.g. 'bold-falcon').
         ticket: Ticket ID (e.g., "AQUA-123") for name generation.
         description: Short description for name generation.
+        url: Target URL for the SIGHT audit. Persisted to
+            ``castings/manifest.json`` as ``target_url`` (the store of
+            record the inspect gate readers load — foundry_orchestrator.py
+            :531 / :1033), mirroring the bash init write at foundry.sh:176.
+            NOT written into state.json.
 
     Returns:
         {foundry_dir, run_name, files_created[], spec_copied}
@@ -227,6 +233,32 @@ def foundry_init(
     }
     _save_json(state_path, state)
     files_created.append("state.json")
+
+    # castings/manifest.json — the store of record for target_url.
+    # The inspect gate readers (_check_streams_complete / _check_sight_required
+    # in foundry_orchestrator.py:531 / :1033) load target_url from HERE, not
+    # from state.json. Mirrors the bash init write shape at foundry.sh:168-182
+    # so the Python and bash init paths produce byte-compatible manifests.
+    # `castings: []` at init keeps the F0 guidance engine emitting DECOMPOSE
+    # (it keys on len(castings), not manifest existence); decompose fills in
+    # the castings/waves later. A run without a url persists target_url="",
+    # which keeps the inspect gate blocked when frontend files are present.
+    manifest_path = fdir / "castings" / "manifest.json"
+    manifest = {
+        "created_at": _init_now,
+        "updated_at": _init_now,
+        "spec_path": spec_path or "",
+        "temper": temper,
+        "no_ui": no_ui,
+        "target_url": url,
+        "max_cycles": 0,
+        "current_cycle": 0,
+        "status": "initialized",
+        "castings": [],
+        "waves": [],
+    }
+    _save_json(manifest_path, manifest)
+    files_created.append("castings/manifest.json")
 
     # forge-log.md — always fresh
     forge_log = fdir / "forge-log.md"

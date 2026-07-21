@@ -72,6 +72,14 @@ VALIDATE_PATH = (
     REPO_ROOT / "plugins" / "foundry" / "scripts"
     / "validate-intent-coverage.py"
 )
+# GI-002 / FR-007: canonical, importable, wheel-safe validator module. The
+# dash-named VALIDATE_PATH above is now a thin shim that imports main() from
+# this module; the validator BODY (regex SSoT, closed vocabularies) lives
+# here. Source-content assertions (byte-equivalence) read this path.
+CANONICAL_VALIDATOR_PATH = (
+    REPO_ROOT / "plugins" / "foundry" / "mcp-server" / "src"
+    / "foundry_mcp" / "scripts" / "validate_intent_coverage.py"
+)
 VALIDATE_SPEC_PY = (
     REPO_ROOT / "plugins" / "forge" / "scripts" / "validate-spec.py"
 )
@@ -476,7 +484,10 @@ def test_intent_coverage_regex_byte_equivalent_to_validate_spec() -> None:
     if not VALIDATE_SPEC_PY.is_file():
         pytest.skip("validate-spec.py missing — Phase 1 territory")
     spec_src = VALIDATE_SPEC_PY.read_text(encoding="utf-8")
-    intent_src = VALIDATE_PATH.read_text(encoding="utf-8")
+    # Post-C1 (GI-002/FR-007): validator body lives in the canonical package
+    # module; the dash-named path is a thin shim. Read the canonical module
+    # for the SSoT regex byte-equivalence assertion.
+    intent_src = CANONICAL_VALIDATOR_PATH.read_text(encoding="utf-8")
     # Extract source-line text for each regex constant from validate-spec.py
     # via simple anchor-then-balanced-paren scan. Both files inline the
     # same compile() expression; verify the inlined intent-coverage form
@@ -780,3 +791,256 @@ def test_synthetic_regression_zero_fp(
         coverage, spec_path=spec,
     )
     assert exit_code == 0, stdout
+
+
+# ---------------------------------------------------------------------------
+# Casting C1 regression tests (NFR-001 — one per acceptance criterion).
+#
+# Bug1/P2 + Bug1-placement (FR-001 / FR-007 / GI-002 / CT-002) and Bug2
+# (FR-009). These drive the Foundry-Intent-Coverage MCP tool
+# (foundry_intent_coverage) and the canonical/shim module structure
+# directly, rather than the dash-named subprocess path the Plan 08-02
+# tests above exercise.
+# ---------------------------------------------------------------------------
+
+
+_CLEAN_SPEC = (
+    "---\nspec_format_version: v2.1\n---\n"
+    "## Appendix: Interview Transcript\n\n"
+    "## A-001 [Locked]\nSurface contract. [from Q-001]\n"
+)
+
+_DROPPED_SPEC = (
+    "---\nspec_format_version: v2.1\n---\n"
+    "## Appendix: Interview Transcript\n\n"
+    "## A-005 [Locked]\nDropped answer. [from Q-005]\n"
+)
+
+
+def _coverage_doc(matrix: list[dict]) -> dict:
+    """Minimal schema-valid intent-coverage.json body around a matrix."""
+    return {
+        "stream": "INTENT-01",
+        "phase": "F0.7",
+        "spec_format_version": "v2.1",
+        "spec_hash": "sha256:abc",
+        "agent_path": "plugins/foundry/agents/intent-carrier.md",
+        "wall_clock_seconds": 1.0,
+        "answer_count": len(matrix),
+        "casting_count": 1,
+        "summary": {"PROPAGATED": 0, "PARAPHRASED": 0, "DROPPED": 0},
+        "matrix": matrix,
+    }
+
+
+@pytest.fixture
+def intent_run(tmp_path: Path):  # noqa: ANN201 — pytest fixture, builder callable
+    """Set up a temp foundry run dir and activate it for foundry_intent_coverage.
+
+    Yields a builder ``make(spec_text, matrix, *, with_manifest=True)`` that
+    writes ``spec.md`` + ``intent-coverage.json`` (+ optional
+    ``castings/manifest.json``) into the run dir and returns
+    ``(project_root, run_dir)``. Restores the module-global active run on
+    teardown so tests never leak run state into each other.
+    """
+    from foundry_mcp.tools import foundry_state
+
+    prior = foundry_state.get_active_run()
+    run_name = "cast-c1-titan-puma"
+    run_dir = tmp_path / foundry_state.ARCHIVE_DIR / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    def make(
+        spec_text: str,
+        matrix: list[dict],
+        *,
+        with_manifest: bool = True,
+    ) -> tuple[str, Path]:
+        (run_dir / "spec.md").write_text(spec_text, encoding="utf-8")
+        (run_dir / "intent-coverage.json").write_text(
+            json.dumps(_coverage_doc(matrix)), encoding="utf-8",
+        )
+        if with_manifest:
+            castings_dir = run_dir / "castings"
+            castings_dir.mkdir(exist_ok=True)
+            (castings_dir / "manifest.json").write_text(
+                json.dumps({"castings": []}), encoding="utf-8",
+            )
+        foundry_state.set_active_run(run_name)
+        return str(tmp_path), run_dir
+
+    yield make
+
+    if prior is None:
+        foundry_state.clear_active_run()
+    else:
+        foundry_state.set_active_run(prior)
+
+
+def test_canonical_validator_module_importable() -> None:
+    """FR-007 / GI-002 — validator body is importable from the package.
+
+    The canonical, wheel-safe module lives at
+    ``foundry_mcp.scripts.validate_intent_coverage`` and exposes a callable
+    ``main``. ``foundry_mcp.scripts`` MUST be a real package (``__init__.py``
+    present) so the import resolves inside an installed wheel — the exact
+    failure mode the old ``parents[4]/scripts`` subprocess path could not
+    survive.
+    """
+    import importlib
+
+    mod = importlib.import_module(
+        "foundry_mcp.scripts.validate_intent_coverage"
+    )
+    assert callable(getattr(mod, "main", None)), "main() must be importable"
+    # Package marker present on disk (wheel-safe).
+    init_py = CANONICAL_VALIDATOR_PATH.parent / "__init__.py"
+    assert init_py.is_file(), (
+        "foundry_mcp/scripts/__init__.py missing — package not wheel-safe"
+    )
+    # The validator BODY (regex SSoT + core function) lives here.
+    src = CANONICAL_VALIDATOR_PATH.read_text(encoding="utf-8")
+    assert "def validate_intent_coverage(" in src
+    assert "ANSWER_BLOCK_RE = re.compile(" in src
+
+
+def test_shim_delegates_to_canonical_main() -> None:
+    """FR-007 / GI-002 — dash-named path is a thin shim, not a second body.
+
+    The old path must import ``main`` from the canonical module and NOT
+    duplicate the validator body (no second copy of the core function or
+    the regex SSoT), so the two sources cannot drift.
+    """
+    shim_src = VALIDATE_PATH.read_text(encoding="utf-8")
+    assert (
+        "from foundry_mcp.scripts.validate_intent_coverage import main"
+        in shim_src
+    ), "shim must import main() from the canonical module"
+    assert "sys.exit(main(sys.argv))" in shim_src, (
+        "shim must delegate to the canonical main()"
+    )
+    # No duplicated validator body in the shim (GI-002 anti-drift).
+    assert "def validate_intent_coverage(" not in shim_src
+    assert "ANSWER_BLOCK_RE = re.compile(" not in shim_src
+
+
+def test_in_process_pass_writes_manifest_summary(
+    intent_run: Callable[..., tuple[str, Path]],
+) -> None:
+    """FR-001 (in-process pass) + FR-009 (manifest summary write).
+
+    A clean intent-coverage.json returns ``passed: True`` via the in-process
+    main() call (no subprocess, no ``python`` binary dependency), stamps the
+    ``.f07-intent-clean`` marker, and appends
+    ``manifest.intent_coverage_summary`` to castings/manifest.json — the key
+    F0.9 sub-check 7m (foundry_validate.py:570-581) requires.
+    """
+    from foundry_mcp.tools.intent_coverage import foundry_intent_coverage
+
+    project_root, run_dir = intent_run(
+        _CLEAN_SPEC,
+        [
+            {"answer_id": "A-001", "casting_id": "1",
+             "verdict": "PROPAGATED", "citation_chain": ["A-001"]},
+        ],
+    )
+    result = foundry_intent_coverage(project_root=project_root)
+
+    assert result["passed"] is True, result
+    assert result["action"] == "proceed_to_validate", result
+    # Marker stamped.
+    assert (run_dir / ".f07-intent-clean").is_file()
+    # FR-009: manifest carries the summary key (sub-check 7m contract).
+    manifest = json.loads(
+        (run_dir / "castings" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert "intent_coverage_summary" in manifest, manifest
+    assert manifest["intent_coverage_summary"]["propagated_count"] == 1
+
+
+def test_missing_validator_yields_tooling_error_not_redecompose(
+    intent_run: Callable[..., tuple[str, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-001 / CT-002 — a MISSING/erroring validator is a tooling error.
+
+    Simulate the validator being unavailable by making the in-process
+    main() raise on invocation. The tool MUST return ``action=tooling_error``
+    — NEVER a fake ``action=redecompose`` — because the failure is tooling,
+    not a spec-coverage DROPPED verdict.
+    """
+    import foundry_mcp.scripts.validate_intent_coverage as validator_mod
+    from foundry_mcp.tools.intent_coverage import foundry_intent_coverage
+
+    def _boom(argv: list[str]) -> int:
+        raise RuntimeError("validator import/exec exploded")
+
+    monkeypatch.setattr(validator_mod, "main", _boom)
+
+    project_root, _ = intent_run(
+        _CLEAN_SPEC,
+        [
+            {"answer_id": "A-001", "casting_id": "1",
+             "verdict": "PROPAGATED", "citation_chain": ["A-001"]},
+        ],
+    )
+    result = foundry_intent_coverage(project_root=project_root)
+
+    assert result["action"] == "tooling_error", result
+    assert result["action"] != "redecompose", result
+    assert result["passed"] is False, result
+
+
+def test_erroring_validator_exit_code_not_redecompose(
+    intent_run: Callable[..., tuple[str, Path]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-001 / CT-002 — a non-verdict exit code is a tooling error.
+
+    An argparse-style usage error (exit 2) or any non-0/1 return from the
+    validator is NOT a legitimate PASS/FAIL verdict; the tool MUST route it
+    to ``action=tooling_error``, never ``redecompose``.
+    """
+    import foundry_mcp.scripts.validate_intent_coverage as validator_mod
+    from foundry_mcp.tools.intent_coverage import foundry_intent_coverage
+
+    monkeypatch.setattr(validator_mod, "main", lambda argv: 2)
+
+    project_root, _ = intent_run(
+        _CLEAN_SPEC,
+        [
+            {"answer_id": "A-001", "casting_id": "1",
+             "verdict": "PROPAGATED", "citation_chain": ["A-001"]},
+        ],
+    )
+    result = foundry_intent_coverage(project_root=project_root)
+
+    assert result["action"] == "tooling_error", result
+    assert result["action"] != "redecompose", result
+
+
+def test_legit_dropped_still_redecomposes_and_surfaces_stderr(
+    intent_run: Callable[..., tuple[str, Path]],
+) -> None:
+    """FR-001 — a REAL DROPPED verdict still routes to redecompose.
+
+    The tooling-error path must not swallow legitimate redecompose signals.
+    A matrix with a DROPPED cell makes the in-process validator exit 1, and
+    the tool returns ``action=redecompose`` with the dropped answer surfaced
+    plus the new ``validator_stderr`` field present.
+    """
+    from foundry_mcp.tools.intent_coverage import foundry_intent_coverage
+
+    project_root, _ = intent_run(
+        _DROPPED_SPEC,
+        [
+            {"answer_id": "A-005", "casting_id": "1",
+             "verdict": "DROPPED", "citation_chain": []},
+        ],
+    )
+    result = foundry_intent_coverage(project_root=project_root)
+
+    assert result["action"] == "redecompose", result
+    assert result["dropped_answers"] == ["A-005"], result
+    assert "validator_stderr" in result, result
+    assert result["validator_exit"] == 1, result

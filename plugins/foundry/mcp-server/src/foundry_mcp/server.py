@@ -100,6 +100,7 @@ async def list_tools() -> list[Tool]:
                     "resume": {"type": "string", "description": "Name of existing run to resume (e.g. 'bold-falcon')."},
                     "ticket": {"type": "string", "default": ""},
                     "description": {"type": "string", "default": ""},
+                    "url": {"type": "string", "default": "", "description": "Target URL for SIGHT audit; persisted to castings/manifest.json target_url."},
                 },
             },
         ),
@@ -457,7 +458,7 @@ _DISPATCH = {
     "Foundry-Init": lambda args: foundry_init(
         spec_path=args.get("spec_path"), temper=args.get("temper", False), no_ui=args.get("no_ui", False),
         resume=args.get("resume"), ticket=args.get("ticket", ""), description=args.get("description", ""),
-        project_root=_project_root),
+        url=args.get("url", ""), project_root=_project_root),
     "Foundry-Next": lambda args: foundry_next_action(project_root=_project_root),
     "Foundry-Context": lambda args: foundry_get_context(project_root=_project_root),
     "Foundry-Gate": lambda args: foundry_gate(phase=args["phase"], project_root=_project_root),

@@ -44,6 +44,8 @@ You are the **Foundry Lead**. Follow `Foundry-Next` literally at every step. It 
 
 Call `Foundry-Next` after every step. It returns a `YOUR NEXT CALL:` imperative — follow it literally. The phases below are a reference for what each phase's goal is, not a substitute for `Foundry-Next`.
 
+**Creating the run (F0):** when you call `Foundry-Init`, thread the `--url URL` invocation flag through by passing `url=<FOUNDRY_URL>` (the value `setup-foundry.sh` echoed as `FOUNDRY_URL=...`). `Foundry-Init` persists it to `castings/manifest.json` as `target_url`, which the SIGHT/inspect gate reads. Omit it (or pass an empty string) when no `--url` was given — the gate then stays blocked for any run that has frontend files but no target URL.
+
 ### F0: RESEARCH
 
 Investigate HOW to build before decomposing. Spawn 2-4 researcher agents in parallel (model: sonnet, prompt: `${CLAUDE_PLUGIN_ROOT}/agents/researcher.md`). Each writes to `foundry-archive/{run}/research/{domain-slug}-RESEARCH.md`. If 4+ researchers, run a `research-synthesizer` agent to produce `SUMMARY.md`.
@@ -534,7 +536,7 @@ Multi-cycle runs accumulate context. After cycle 2+, if `Foundry-Next` shows `es
 
 | Tool | When |
 |------|------|
-| `Foundry-Init` | F0: create run |
+| `Foundry-Init` | F0: create run — pass `url=<FOUNDRY_URL from setup-foundry.sh>` so the `--url URL` invocation flag is persisted to `castings/manifest.json` `target_url` for the SIGHT/inspect gate |
 | `Foundry-Next` | Every step: what to do next (returns `YOUR NEXT CALL:` imperative) |
 | `Foundry-Gate` | Before phase transitions |
 | `Foundry-Phase` | Mark phase transitions |
