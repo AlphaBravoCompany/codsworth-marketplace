@@ -1,3 +1,17 @@
+> [!IMPORTANT]
+> ## This repository has moved
+>
+> Development continues at **[alphabravo-oss/guild](https://github.com/alphabravo-oss/guild)**.
+>
+> This copy is frozen at foundry v4.4.0 / forge v4.3.1 and will receive no further
+> updates. There is no automatic redirect — the new repository was created fresh, so
+> an existing install will keep pointing here and silently stop receiving updates
+> until you re-add the marketplace.
+>
+> See the [README at the new home](https://github.com/alphabravo-oss/guild#readme)
+> for current install instructions. The marketplace id changed from `codsworth` to
+> `guild`, so plugin ids moved with it.
+
 <p align="center">
   <img src=".github/assets/banner.jpg" alt="Codsworth Marketplace — Forge, Foundry, adhoc" width="900"/>
 </p>
